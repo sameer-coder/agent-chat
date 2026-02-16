@@ -1,0 +1,19 @@
+{
+  "name": "agent-chat",
+  "version": "1.0.0",
+  "description": "Multi-agent dashboard with Master Handler and Sub-Agents",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "fastify": "^4.28.1",
+    "@fastify/static": "^7.0.4",
+    "@fastify/websocket": "^10.0.1",
+    "openai": "^4.77.0",
+    "dotenv": "^16.4.5"
+  }
+}

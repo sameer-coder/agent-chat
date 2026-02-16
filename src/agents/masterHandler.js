@@ -1,0 +1,597 @@
+import { chat, chatStream } from './openaiService.js';
+import { createSubAgentAlpha, createSubAgentBeta, getCommunicationBus } from './subAgent.js';
+
+// System prompt for Master Handler
+const MASTER_HANDLER_SYSTEM_PROMPT = `You are the Master Handler - the central orchestrator of a multi-agent system.
+
+Your role:
+1. Analyze incoming tasks from the user
+2. Break down complex tasks into smaller, manageable subtasks
+3. Assign appropriate subtasks to your Sub-Agents (Alpha and Beta)
+4. Coordinate communication between Sub-Agents when needed
+5. Monitor progress and results from Sub-Agents
+6. Synthesize the outputs from both Sub-Agents into a coherent final response
+
+Task Analysis Guidelines:
+- Identify if the task can be broken into independent subtasks
+- Determine which subtasks can run in parallel
+- Assign related subtasks to different agents for efficiency
+- Consider each agent's strengths when assigning tasks
+
+Communication Style:
+- Be clear and professional when directing agents
+- Acknowledge when agents report back
+- Keep the user informed of progress
+- Provide context when assigning subtasks
+
+Final Synthesis:
+- Combine results from both Sub-Agents
+- Ensure the final response is coherent and complete
+- Address any conflicts or gaps in the results
+- Present a unified solution to the user
+
+Remember: You are the leader - coordinate, don't do all the work yourself!`;
+
+/**
+ * Retry configuration
+ */
+export const RETRY_CONFIG = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 10000,
+  backoffMultiplier: 2
+};
+
+/**
+ * Sleep utility for retry delays
+ * @param {number} ms - Milliseconds to sleep
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Calculate delay for retry with exponential backoff
+ * @param {number} attempt - Current attempt number (0-indexed)
+ * @returns {number} Delay in milliseconds
+ */
+function calculateRetryDelay(attempt) {
+  const delay = RETRY_CONFIG.baseDelayMs * Math.pow(RETRY_CONFIG.backoffMultiplier, attempt);
+  return Math.min(delay, RETRY_CONFIG.maxDelayMs);
+}
+
+/**
+ * Execute a function with retry logic
+ * @param {Function} fn - Async function to execute
+ * @param {string} operationName - Name of the operation for logging
+ * @param {Function} onRetry - Callback for retry events
+ * @returns {Promise<{success: boolean, result?: any, error?: string, attempts: number}>}
+ */
+export async function withRetry(fn, operationName, onRetry = null) {
+  let lastError = null;
+  
+  for (let attempt = 0; attempt < RETRY_CONFIG.maxRetries; attempt++) {
+    try {
+      const result = await fn();
+      return { success: true, result, attempts: attempt + 1 };
+    } catch (error) {
+      lastError = error;
+      
+      // Don't retry on certain errors
+      if (error.message?.includes('401') || 
+          error.message?.includes('403') ||
+          error.message?.includes('Invalid API key')) {
+        break;
+      }
+      
+      // If this wasn't the last attempt, wait and retry
+      if (attempt < RETRY_CONFIG.maxRetries - 1) {
+        const delay = calculateRetryDelay(attempt);
+        
+        if (onRetry) {
+          onRetry({
+            operation: operationName,
+            attempt: attempt + 1,
+            maxRetries: RETRY_CONFIG.maxRetries,
+            delay,
+            error: error.message
+          });
+        }
+        
+        await sleep(delay);
+      }
+    }
+  }
+  
+  return { 
+    success: false, 
+    error: lastError?.message || 'Unknown error', 
+    attempts: RETRY_CONFIG.maxRetries 
+  };
+}
+
+/**
+ * Master Handler - orchestrates the multi-agent system
+ */
+export class MasterHandler {
+  constructor() {
+    this.name = 'Master Handler';
+    this.agentId = 'master-handler';
+    this.subAgentAlpha = createSubAgentAlpha();
+    this.subAgentBeta = createSubAgentBeta();
+    this.conversationHistory = [
+      { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT }
+    ];
+    this.subTasks = {
+      alpha: null,
+      beta: null
+    };
+    this.subTaskResults = {
+      alpha: null,
+      beta: null
+    };
+    this.executionLog = [];
+  }
+
+  /**
+   * Log an execution event
+   * @param {string} event - Event type
+   * @param {Object} data - Event data
+   */
+  log(event, data = {}) {
+    this.executionLog.push({
+      timestamp: new Date().toISOString(),
+      event,
+      ...data
+    });
+  }
+
+  /**
+   * Process a user task - analyze, break down, and coordinate sub-agents
+   * @param {string} task - The user's task
+   * @param {Function} onMessage - Callback for streaming messages to the dashboard
+   * @returns {Promise<string>} Final synthesized response
+   */
+  async processTask(task, onMessage = null) {
+    // Clear previous execution log
+    this.executionLog = [];
+    this.log('task_started', { task });
+
+    // Add user task to history
+    this.conversationHistory.push({
+      role: 'user',
+      content: `User's task: "${task}"`
+    });
+
+    // Step 1: Analyze task and determine how to break it down
+    if (onMessage) {
+      onMessage({
+        type: 'status',
+        agent: 'master-handler',
+        message: 'Analyzing task and determining how to break it down...'
+      });
+    }
+
+    // Analyze task with retry
+    const analysisResult = await withRetry(
+      () => this.analyzeTask(task),
+      'task_analysis',
+      (retryInfo) => {
+        this.log('retry', retryInfo);
+        if (onMessage) {
+          onMessage({
+            type: 'retry',
+            agent: 'master-handler',
+            message: `Retrying task analysis (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`,
+            ...retryInfo
+          });
+        }
+      }
+    );
+
+    if (!analysisResult.success) {
+      this.log('task_analysis_failed', { error: analysisResult.error });
+      throw new Error(`Task analysis failed after ${analysisResult.attempts} attempts: ${analysisResult.error}`);
+    }
+
+    const taskAnalysis = analysisResult.result;
+    this.log('task_analyzed', { explanation: taskAnalysis.explanation });
+    
+    if (onMessage) {
+      onMessage({
+        type: 'task-breakdown',
+        agent: 'master-handler',
+        message: taskAnalysis.explanation,
+        subtasks: taskAnalysis.subtasks
+      });
+    }
+
+    // Step 2: Assign subtasks to sub-agents
+    const subtasks = taskAnalysis.subtasks;
+    this.subTasks.alpha = subtasks[0];
+    this.subTasks.beta = subtasks[1];
+
+    if (onMessage) {
+      onMessage({
+        type: 'status',
+        agent: 'master-handler',
+        message: `Assigning subtasks to Sub-Agents...`
+      });
+    }
+
+    // Process both subtasks in parallel with error recovery
+    const results = await this.processSubTasksWithRecovery(subtasks, onMessage);
+
+    // Handle partial failures
+    const { alphaResult, betaResult, partialFailure } = results;
+    this.subTaskResults.alpha = alphaResult;
+    this.subTaskResults.beta = betaResult;
+
+    if (partialFailure) {
+      this.log('partial_failure', { 
+        alphaSuccess: !!alphaResult, 
+        betaSuccess: !!betaResult 
+      });
+      
+      if (onMessage) {
+        onMessage({
+          type: 'warning',
+          agent: 'master-handler',
+          message: 'One or more sub-agents encountered issues. Proceeding with available results.'
+        });
+      }
+    }
+
+    // Step 3: Synthesize results
+    if (onMessage) {
+      onMessage({
+        type: 'status',
+        agent: 'master-handler',
+        message: 'Synthesizing results from Sub-Agents...'
+      });
+    }
+
+    // Synthesize with retry
+    const synthesisResult = await withRetry(
+      () => this.synthesizeResults(task, alphaResult, betaResult, partialFailure),
+      'result_synthesis',
+      (retryInfo) => {
+        this.log('retry', retryInfo);
+        if (onMessage) {
+          onMessage({
+            type: 'retry',
+            agent: 'master-handler',
+            message: `Retrying result synthesis (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`,
+            ...retryInfo
+          });
+        }
+      }
+    );
+
+    if (!synthesisResult.success) {
+      this.log('synthesis_failed', { error: synthesisResult.error });
+      throw new Error(`Result synthesis failed after ${synthesisResult.attempts} attempts: ${synthesisResult.error}`);
+    }
+
+    const synthesis = synthesisResult.result;
+
+    // Add final response to history
+    this.conversationHistory.push({
+      role: 'assistant',
+      content: synthesis
+    });
+
+    this.log('task_completed', { synthesisLength: synthesis.length });
+
+    if (onMessage) {
+      onMessage({
+        type: 'complete',
+        agent: 'master-handler',
+        message: synthesis
+      });
+    }
+
+    return synthesis;
+  }
+
+  /**
+   * Process subtasks with error recovery and partial failure handling
+   * @param {Array<string>} subtasks - Array of two subtasks
+   * @param {Function} onMessage - Callback for messages
+   * @returns {Promise<Object>} Results object with alpha and beta results
+   */
+  async processSubTasksWithRecovery(subtasks, onMessage = null) {
+    // Create communication callback for inter-agent messaging
+    const onCommunication = (commEvent) => {
+      this.log('inter_agent_communication', commEvent);
+      if (onMessage) {
+        onMessage(commEvent);
+      }
+    };
+
+    // Process both subtasks in parallel with individual retry logic
+    const [alphaResult, betaResult] = await Promise.allSettled([
+      this.processSubTaskAlpha(subtasks[0], onMessage, onCommunication),
+      this.processSubTaskBeta(subtasks[1], onMessage, onCommunication)
+    ]);
+
+    // Handle results with graceful degradation
+    let alphaValue = null;
+    let betaValue = null;
+    let partialFailure = false;
+
+    if (alphaResult.status === 'fulfilled') {
+      alphaValue = alphaResult.value;
+    } else {
+      this.log('subtask_alpha_failed', { error: alphaResult.reason?.message });
+      alphaValue = `[Sub-Agent Alpha failed: ${alphaResult.reason?.message || 'Unknown error'}]`;
+      partialFailure = true;
+    }
+
+    if (betaResult.status === 'fulfilled') {
+      betaValue = betaResult.value;
+    } else {
+      this.log('subtask_beta_failed', { error: betaResult.reason?.message });
+      betaValue = `[Sub-Agent Beta failed: ${betaResult.reason?.message || 'Unknown error'}]`;
+      partialFailure = true;
+    }
+
+    // If both failed, throw an error
+    if (alphaResult.status === 'rejected' && betaResult.status === 'rejected') {
+      throw new Error(
+        `Both sub-agents failed. Alpha: ${alphaResult.reason?.message}. Beta: ${betaResult.reason?.message}`
+      );
+    }
+
+    return {
+      alphaResult: alphaValue,
+      betaResult: betaValue,
+      partialFailure
+    };
+  }
+
+  /**
+   * Analyze the task and determine how to break it down
+   * @param {string} task - The task to analyze
+   * @returns {Promise<Object>} Analysis result with subtasks
+   */
+  async analyzeTask(task) {
+    const analysisPrompt = `Analyze this task and break it down into exactly 2 independent subtasks that can be worked on in parallel by different agents:
+
+Task: "${task}"
+
+Provide your response in this exact format:
+EXPLANATION: [Brief explanation of how you're breaking down the task]
+SUBTASK 1: [First subtask for Sub-Agent Alpha]
+SUBTASK 2: [Second subtask for Sub-Agent Beta]`;
+
+    const response = await chat([
+      ...this.conversationHistory,
+      { role: 'user', content: analysisPrompt }
+    ]);
+
+    // Parse the response
+    const lines = response.split('\n');
+    let explanation = '';
+    const subtasks = ['', ''];
+    
+    let currentField = '';
+    for (const line of lines) {
+      if (line.startsWith('EXPLANATION:')) {
+        currentField = 'explanation';
+        explanation = line.replace('EXPLANATION:', '').trim();
+      } else if (line.startsWith('SUBTASK 1:')) {
+        currentField = 'subtask1';
+        subtasks[0] = line.replace('SUBTASK 1:', '').trim();
+      } else if (line.startsWith('SUBTASK 2:')) {
+        currentField = 'subtask2';
+        subtasks[1] = line.replace('SUBTASK 2:', '').trim();
+      } else if (currentField === 'explanation' && line.trim()) {
+        explanation += ' ' + line.trim();
+      } else if (currentField === 'subtask1' && line.trim()) {
+        subtasks[0] += ' ' + line.trim();
+      } else if (currentField === 'subtask2' && line.trim()) {
+        subtasks[1] += ' ' + line.trim();
+      }
+    }
+
+    return {
+      explanation: explanation.trim(),
+      subtasks: subtasks.map(s => s.trim())
+    };
+  }
+
+  /**
+   * Process subtask for Alpha agent with retry logic
+   */
+  async processSubTaskAlpha(subtask, onMessage, onCommunication = null) {
+    if (onMessage) {
+      onMessage({
+        type: 'task-assignment',
+        agent: 'master-handler',
+        target: 'alpha',
+        message: `Assigning to Sub-Agent Alpha: "${subtask}"`
+      });
+    }
+
+    if (onMessage) {
+      onMessage({
+        type: 'status',
+        agent: 'alpha',
+        message: 'Processing subtask...'
+      });
+    }
+
+    // Process with retry
+    const result = await withRetry(
+      () => this.subAgentAlpha.processSubtask(subtask, (chunk) => {
+        if (onMessage) {
+          onMessage({
+            type: 'streaming',
+            agent: 'alpha',
+            chunk: chunk
+          });
+        }
+      }, onCommunication),
+      'subtask_alpha',
+      (retryInfo) => {
+        this.log('retry', { ...retryInfo, agent: 'alpha' });
+        if (onMessage) {
+          onMessage({
+            type: 'retry',
+            agent: 'alpha',
+            message: `Retrying subtask (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`,
+            ...retryInfo
+          });
+        }
+      }
+    );
+
+    if (!result.success) {
+      throw new Error(result.error);
+    }
+
+    if (onMessage) {
+      onMessage({
+        type: 'task-complete',
+        agent: 'alpha',
+        message: 'Subtask completed'
+      });
+    }
+
+    return result.result;
+  }
+
+  /**
+   * Process subtask for Beta agent with retry logic
+   */
+  async processSubTaskBeta(subtask, onMessage, onCommunication = null) {
+    if (onMessage) {
+      onMessage({
+        type: 'task-assignment',
+        agent: 'master-handler',
+        target: 'beta',
+        message: `Assigning to Sub-Agent Beta: "${subtask}"`
+      });
+    }
+
+    if (onMessage) {
+      onMessage({
+        type: 'status',
+        agent: 'beta',
+        message: 'Processing subtask...'
+      });
+    }
+
+    // Process with retry
+    const result = await withRetry(
+      () => this.subAgentBeta.processSubtask(subtask, (chunk) => {
+        if (onMessage) {
+          onMessage({
+            type: 'streaming',
+            agent: 'beta',
+            chunk: chunk
+          });
+        }
+      }, onCommunication),
+      'subtask_beta',
+      (retryInfo) => {
+        this.log('retry', { ...retryInfo, agent: 'beta' });
+        if (onMessage) {
+          onMessage({
+            type: 'retry',
+            agent: 'beta',
+            message: `Retrying subtask (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`,
+            ...retryInfo
+          });
+        }
+      }
+    );
+
+    if (!result.success) {
+      throw new Error(result.error);
+    }
+
+    if (onMessage) {
+      onMessage({
+        type: 'task-complete',
+        agent: 'beta',
+        message: 'Subtask completed'
+      });
+    }
+
+    return result.result;
+  }
+
+  /**
+   * Synthesize results from both sub-agents
+   * @param {string} originalTask - The original task
+   * @param {string} alphaResult - Result from Alpha agent
+   * @param {string} betaResult - Result from Beta agent
+   * @param {boolean} partialFailure - Whether there was a partial failure
+   * @returns {Promise<string>} Synthesized response
+   */
+  async synthesizeResults(originalTask, alphaResult, betaResult, partialFailure = false) {
+    const failureNote = partialFailure 
+      ? '\n\nNote: One of the sub-agents encountered issues. Please work with the available results and note any limitations in your synthesis.'
+      : '';
+
+    const synthesisPrompt = `The user originally requested: "${originalTask}"
+
+Sub-Agent Alpha completed their subtask with:
+${alphaResult}
+
+Sub-Agent Beta completed their subtask with:
+${betaResult}
+${failureNote}
+
+Please synthesize these results into a coherent, complete final response. Combine the findings, address any overlaps or conflicts, and present a unified solution.`;
+
+    const response = await chat([
+      ...this.conversationHistory,
+      { role: 'user', content: synthesisPrompt }
+    ]);
+
+    return response;
+  }
+
+  /**
+   * Get the execution log
+   * @returns {Array} Execution log entries
+   */
+  getExecutionLog() {
+    return [...this.executionLog];
+  }
+
+  /**
+   * Reset the Master Handler for a new task
+   */
+  reset() {
+    this.conversationHistory = [
+      { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT }
+    ];
+    this.subAgentAlpha.reset();
+    this.subAgentBeta.reset();
+    this.subTasks = { alpha: null, beta: null };
+    this.subTaskResults = { alpha: null, beta: null };
+    this.executionLog = [];
+    
+    // Clear communication bus history
+    getCommunicationBus().clearHistory();
+  }
+}
+
+/**
+ * Create a new Master Handler instance
+ */
+export function createMasterHandler() {
+  return new MasterHandler();
+}
+
+export default {
+  MasterHandler,
+  createMasterHandler,
+  withRetry,
+  RETRY_CONFIG
+};
