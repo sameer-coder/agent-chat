@@ -357,7 +357,14 @@ class AgentDashboard {
         this.updateAgentStatus(data.agent, 'Completed');
         break;
       case 'agent-result':
-        this.addAgentResultMessage(data.agent, data.message);
+        this.addAgentResultMessage(data.agent, data.message, data.round || 1);
+        break;
+      case 'evaluation':
+        this.addEvaluationMessage(data.message, data.satisfied, data.round);
+        break;
+      case 'follow-up-assignment':
+        this.addSequenceHandoff('master-handler', data.target, `Follow-up round ${data.round}`);
+        this.addFollowUpAssignment(data.target, data.message, data.round);
         break;
       case 'agent-communication':
         this.addSequenceHandoff(data.from, data.to, 'Agent communication');
@@ -787,7 +794,7 @@ class AgentDashboard {
   /**
    * Add a collapsible sub-agent result message
    */
-  addAgentResultMessage(agent, message) {
+  addAgentResultMessage(agent, message, round = 1) {
     const agentNames = {
       'alpha': 'Sub-Agent Alpha',
       'beta': 'Sub-Agent Beta'
@@ -798,6 +805,7 @@ class AgentDashboard {
     };
     const colors = agentColors[agent] || agentColors['alpha'];
     const name = agentNames[agent] || agent;
+    const roundLabel = round > 1 ? ` (Follow-up Round ${round - 1})` : '';
     const collapseId = `result-${agent}-${Date.now()}`;
 
     const messageDiv = document.createElement('div');
@@ -823,7 +831,7 @@ class AgentDashboard {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
             </svg>
           </div>
-          <span class="font-medium text-sm ${colors.text}">${name} — Completed Result</span>
+          <span class="font-medium text-sm ${colors.text}">${name} — Completed Result${roundLabel}</span>
           <span class="text-xs ${colors.text} opacity-60">(click to expand)</span>
         </div>
         <svg class="chevron-icon w-4 h-4 ${colors.text} transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -833,6 +841,75 @@ class AgentDashboard {
       <div id="${collapseId}" class="hidden px-4 py-3 border-t ${colors.border}">
         <div class="text-gray-800 text-sm whitespace-pre-wrap max-h-96 overflow-y-auto">${this.escapeHtml(message)}</div>
       </div>
+    `;
+    this.messagesContainer.appendChild(messageDiv);
+    this.scrollToBottom();
+  }
+
+  /**
+   * Add an evaluation result message from the master handler
+   */
+  addEvaluationMessage(reasoning, satisfied, round) {
+    const icon = satisfied
+      ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>'
+      : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>';
+    const borderColor = satisfied ? 'border-green-300' : 'border-orange-300';
+    const bgColor = satisfied ? 'bg-green-50' : 'bg-orange-50';
+    const iconColor = satisfied ? 'text-green-500' : 'text-orange-500';
+    const badgeColor = satisfied ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700';
+    const verdictText = satisfied ? 'Satisfied' : 'Needs Follow-up';
+
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message-enter ${bgColor} rounded-lg border ${borderColor} p-4 shadow-sm`;
+    messageDiv.innerHTML = `
+      <div class="flex items-start gap-3">
+        <div class="flex-shrink-0 mt-0.5">
+          <svg class="w-5 h-5 ${iconColor}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            ${icon}
+          </svg>
+        </div>
+        <div class="flex-1">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="font-semibold text-sm text-gray-800">Master Handler — Evaluation</span>
+            <span class="text-xs px-2 py-0.5 rounded-full ${badgeColor} font-medium">${verdictText}</span>
+            <span class="text-xs text-gray-400">Round ${round}</span>
+          </div>
+          <p class="text-gray-700 text-sm">${this.escapeHtml(reasoning)}</p>
+        </div>
+      </div>
+    `;
+    this.messagesContainer.appendChild(messageDiv);
+    this.scrollToBottom();
+  }
+
+  /**
+   * Add a follow-up task assignment message
+   */
+  addFollowUpAssignment(agent, task, round) {
+    const agentNames = {
+      'alpha': 'Sub-Agent Alpha',
+      'beta': 'Sub-Agent Beta'
+    };
+    const agentColors = {
+      'alpha': 'border-cyan-300 bg-cyan-50',
+      'beta': 'border-emerald-300 bg-emerald-50'
+    };
+    const dotColor = agent === 'alpha' ? 'bg-cyan-500' : 'bg-emerald-500';
+    const name = agentNames[agent] || agent;
+
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message-enter p-3 rounded-lg border ${agentColors[agent]} shadow-sm`;
+    messageDiv.innerHTML = `
+      <div class="flex items-center gap-2 mb-1">
+        <div class="w-5 h-5 rounded-full ${dotColor} flex items-center justify-center">
+          <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+          </svg>
+        </div>
+        <span class="text-sm font-medium text-gray-700">Follow-up assigned to ${name}</span>
+        <span class="text-xs text-gray-400">Round ${round}</span>
+      </div>
+      <p class="text-gray-600 text-sm">${this.escapeHtml(task)}</p>
     `;
     this.messagesContainer.appendChild(messageDiv);
     this.scrollToBottom();

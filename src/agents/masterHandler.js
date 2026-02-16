@@ -28,8 +28,14 @@ Communication Style:
 - When a Sub-Agent asks you a question, answer concisely and helpfully
   based on the original user task and any context you have
 
+Quality Evaluation:
+- After receiving results from Sub-Agents, critically evaluate their quality
+- Check for completeness, accuracy, depth, and relevance to the original task
+- If the results are lacking, assign targeted follow-up tasks to address the gaps
+- You may request up to 2 rounds of follow-up work before final synthesis
+
 Final Synthesis:
-- Combine results from both Sub-Agents
+- Combine results from ALL rounds (initial + any follow-ups) from both Sub-Agents
 - Ensure the final response is coherent and complete
 - Address any conflicts or gaps in the results
 - Present a unified solution to the user
@@ -277,20 +283,22 @@ export class MasterHandler {
     this.subTaskResults.alpha = alphaResult;
     this.subTaskResults.beta = betaResult;
 
-    // Log sub-agent results to dashboard
+    // Log sub-agent results to dashboard (Round 1)
     if (onMessage) {
       if (alphaResult) {
         onMessage({
           type: 'agent-result',
           agent: 'alpha',
-          message: alphaResult
+          message: alphaResult,
+          round: 1
         });
       }
       if (betaResult) {
         onMessage({
           type: 'agent-result',
           agent: 'beta',
-          message: betaResult
+          message: betaResult,
+          round: 1
         });
       }
     }
@@ -310,18 +318,119 @@ export class MasterHandler {
       }
     }
 
-    // Step 3: Synthesize results
+    // ── Step 3: Evaluation & Follow-up Loop ──
+    const MAX_FOLLOW_UP_ROUNDS = 2;
+    const allResults = {
+      alpha: [alphaResult],
+      beta: [betaResult]
+    };
+
+    for (let round = 1; round <= MAX_FOLLOW_UP_ROUNDS; round++) {
+      if (onMessage) {
+        onMessage({
+          type: 'status',
+          agent: 'master-handler',
+          message: `Evaluating sub-agent results (round ${round})...`
+        });
+      }
+
+      const latestAlpha = allResults.alpha[allResults.alpha.length - 1];
+      const latestBeta = allResults.beta[allResults.beta.length - 1];
+
+      const evaluation = await this.evaluateResults(task, latestAlpha, latestBeta);
+      this.log('evaluation', { round, satisfied: evaluation.satisfied });
+
+      if (onMessage) {
+        onMessage({
+          type: 'evaluation',
+          agent: 'master-handler',
+          message: evaluation.reasoning,
+          satisfied: evaluation.satisfied,
+          round
+        });
+      }
+
+      if (evaluation.satisfied) {
+        this.log('evaluation_satisfied', { round });
+        break;
+      }
+
+      // Assign follow-up tasks
+      if (onMessage) {
+        onMessage({
+          type: 'status',
+          agent: 'master-handler',
+          message: `Assigning follow-up tasks (round ${round})...`
+        });
+      }
+
+      const followUpPromises = [];
+
+      if (evaluation.followUps.alpha) {
+        this.log('follow_up_assigned', { agent: 'alpha', round, task: evaluation.followUps.alpha });
+        if (onMessage) {
+          onMessage({
+            type: 'follow-up-assignment',
+            agent: 'master-handler',
+            target: 'alpha',
+            message: evaluation.followUps.alpha,
+            round: round + 1
+          });
+        }
+        followUpPromises.push(
+          this.processFollowUpTask('alpha', evaluation.followUps.alpha, onMessage)
+            .then(r => ({ agent: 'alpha', result: r }))
+            .catch(e => ({ agent: 'alpha', result: `[Follow-up failed: ${e.message}]` }))
+        );
+      }
+
+      if (evaluation.followUps.beta) {
+        this.log('follow_up_assigned', { agent: 'beta', round, task: evaluation.followUps.beta });
+        if (onMessage) {
+          onMessage({
+            type: 'follow-up-assignment',
+            agent: 'master-handler',
+            target: 'beta',
+            message: evaluation.followUps.beta,
+            round: round + 1
+          });
+        }
+        followUpPromises.push(
+          this.processFollowUpTask('beta', evaluation.followUps.beta, onMessage)
+            .then(r => ({ agent: 'beta', result: r }))
+            .catch(e => ({ agent: 'beta', result: `[Follow-up failed: ${e.message}]` }))
+        );
+      }
+
+      if (followUpPromises.length === 0) break;
+
+      const followUpResults = await Promise.all(followUpPromises);
+
+      for (const { agent, result } of followUpResults) {
+        allResults[agent].push(result);
+        if (onMessage) {
+          onMessage({
+            type: 'agent-result',
+            agent,
+            message: result,
+            round: round + 1
+          });
+        }
+      }
+    }
+
+    // ── Step 4: Synthesize all results ──
     if (onMessage) {
       onMessage({
         type: 'status',
         agent: 'master-handler',
-        message: 'Synthesizing results from Sub-Agents...'
+        message: 'Synthesizing all results from Sub-Agents...'
       });
     }
 
     // Synthesize with retry
     const synthesisResult = await withRetry(
-      () => this.synthesizeResults(task, alphaResult, betaResult, partialFailure),
+      () => this.synthesizeResults(task, allResults),
       'result_synthesis',
       (retryInfo) => {
         this.log('retry', retryInfo);
@@ -610,44 +719,200 @@ SUBTASK 2: [Second subtask for Sub-Agent Beta - a different, complementary porti
   }
 
   /**
-   * Synthesize results from both sub-agents
+   * Synthesize results from both sub-agents across all rounds
    * @param {string} originalTask - The original task
-   * @param {string} alphaResult - Result from Alpha agent
-   * @param {string} betaResult - Result from Beta agent
-   * @param {boolean} partialFailure - Whether there was a partial failure
+   * @param {Object} allResults - { alpha: string[], beta: string[] } results from all rounds
    * @returns {Promise<string>} Synthesized response
    */
-  async synthesizeResults(originalTask, alphaResult, betaResult, partialFailure = false) {
-    const failureNote = partialFailure 
-      ? '\n\nNote: One of the sub-agents encountered issues. Please work with the available results and note any limitations in your synthesis.'
+  async synthesizeResults(originalTask, allResults) {
+    // Build per-agent result blocks that include all rounds
+    const formatAgentResults = (agentName, results) => {
+      if (results.length === 1) {
+        return `${agentName} produced this output:\n--- ${agentName.toUpperCase()} OUTPUT ---\n${results[0]}\n--- END ---`;
+      }
+      return results.map((r, i) => {
+        const label = i === 0 ? 'Initial task' : `Follow-up round ${i}`;
+        return `${agentName} — ${label}:\n--- ${agentName.toUpperCase()} ROUND ${i + 1} ---\n${r}\n--- END ---`;
+      }).join('\n\n');
+    };
+
+    const alphaBlock = formatAgentResults('Sub-Agent Alpha', allResults.alpha);
+    const betaBlock = formatAgentResults('Sub-Agent Beta', allResults.beta);
+    const totalRounds = Math.max(allResults.alpha.length, allResults.beta.length);
+    const roundsNote = totalRounds > 1
+      ? `\n\nNote: The sub-agents completed ${totalRounds} round(s) of work (initial + ${totalRounds - 1} follow-up(s)). Incorporate findings from ALL rounds.`
       : '';
 
     const synthesisPrompt = `You are the Master Handler synthesizing results from your two Sub-Agents.
 
 The user originally requested: "${originalTask}"
 
-Sub-Agent Alpha completed their subtask and produced this output:
---- ALPHA OUTPUT START ---
-${alphaResult}
---- ALPHA OUTPUT END ---
+${alphaBlock}
 
-Sub-Agent Beta completed their subtask and produced this output:
---- BETA OUTPUT START ---
-${betaResult}
---- BETA OUTPUT END ---
-${failureNote}
+${betaBlock}
+${roundsNote}
 
-IMPORTANT: The outputs above ARE the completed results from the sub-agents. Do NOT say you haven't received them. Synthesize these results into a coherent, complete final response for the user. Combine the findings, address any overlaps or conflicts, and present a unified solution.`;
+IMPORTANT: The outputs above ARE the completed results from the sub-agents. Do NOT say you haven't received them. Synthesize these results into a coherent, complete final response for the user. Combine the findings from all rounds, address any overlaps or conflicts, and present a unified solution.`;
 
     // Use a CLEAN messages array — do NOT pass conversationHistory here.
-    // The history contains analysis prompts, question exchanges, etc. that confuse
-    // the LLM into thinking the sub-agent outputs haven't been provided yet.
     const response = await chat([
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
       { role: 'user', content: synthesisPrompt }
     ]);
 
     return response;
+  }
+
+  /**
+   * Evaluate sub-agent results and decide whether follow-up tasks are needed
+   * @param {string} originalTask - The original user task
+   * @param {string} alphaResult - Latest result from Alpha
+   * @param {string} betaResult - Latest result from Beta
+   * @returns {Promise<{satisfied: boolean, reasoning: string, followUps: {alpha: string|null, beta: string|null}}>}
+   */
+  async evaluateResults(originalTask, alphaResult, betaResult) {
+    const evaluationPrompt = `You are the Master Handler evaluating your Sub-Agents' work.
+
+Original user task: "${originalTask}"
+
+Sub-Agent Alpha's latest output:
+--- ALPHA ---
+${alphaResult || '[No output]'}
+--- END ALPHA ---
+
+Sub-Agent Beta's latest output:
+--- BETA ---
+${betaResult || '[No output]'}
+--- END BETA ---
+
+Critically evaluate whether these results TOGETHER adequately address the user's task.
+Consider: completeness, depth, accuracy, relevance, and whether anything important is missing.
+
+You MUST respond in this EXACT format:
+
+VERDICT: SATISFIED or NEEDS_FOLLOW_UP
+REASONING: [Brief explanation of your evaluation]
+FOLLOW_UP_ALPHA: [Follow-up task for Alpha, or NONE if Alpha's work is adequate]
+FOLLOW_UP_BETA: [Follow-up task for Beta, or NONE if Beta's work is adequate]
+
+Only request follow-ups for genuinely important gaps. Minor stylistic issues do not warrant follow-ups.`;
+
+    const response = await chat([
+      { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
+      { role: 'user', content: evaluationPrompt }
+    ]);
+
+    // Parse the evaluation response
+    let satisfied = true;
+    let reasoning = '';
+    const followUps = { alpha: null, beta: null };
+
+    const lines = response.split('\n');
+    let currentField = '';
+    for (const line of lines) {
+      const stripped = line.replace(/^\*\*|\*\*$/g, '').replace(/^#+\s*/, '').trim();
+      if (/^VERDICT\s*:/i.test(stripped)) {
+        const verdict = stripped.replace(/^VERDICT\s*:/i, '').trim().toUpperCase();
+        satisfied = !verdict.includes('NEEDS_FOLLOW_UP') && !verdict.includes('FOLLOW');
+        currentField = 'verdict';
+      } else if (/^REASONING\s*:/i.test(stripped)) {
+        currentField = 'reasoning';
+        reasoning = stripped.replace(/^REASONING\s*:/i, '').trim();
+      } else if (/^FOLLOW_UP_ALPHA\s*:/i.test(stripped)) {
+        currentField = 'alpha';
+        const val = stripped.replace(/^FOLLOW_UP_ALPHA\s*:/i, '').trim();
+        if (val && !/^NONE$/i.test(val) && !/^N\/A$/i.test(val)) {
+          followUps.alpha = val;
+        }
+      } else if (/^FOLLOW_UP_BETA\s*:/i.test(stripped)) {
+        currentField = 'beta';
+        const val = stripped.replace(/^FOLLOW_UP_BETA\s*:/i, '').trim();
+        if (val && !/^NONE$/i.test(val) && !/^N\/A$/i.test(val)) {
+          followUps.beta = val;
+        }
+      } else if (stripped && currentField === 'reasoning') {
+        reasoning += ' ' + stripped;
+      } else if (stripped && currentField === 'alpha' && followUps.alpha) {
+        followUps.alpha += ' ' + stripped;
+      } else if (stripped && currentField === 'beta' && followUps.beta) {
+        followUps.beta += ' ' + stripped;
+      }
+    }
+
+    // If verdict says needs follow-up but no specific tasks were parsed, mark as satisfied
+    if (!satisfied && !followUps.alpha && !followUps.beta) {
+      satisfied = true;
+      reasoning += ' (No specific follow-up tasks identified, proceeding with current results.)';
+    }
+
+    if (!reasoning) reasoning = satisfied ? 'Results are satisfactory.' : 'Results need improvement.';
+
+    console.log(`\n===== EVALUATION: ${satisfied ? 'SATISFIED' : 'NEEDS FOLLOW-UP'} =====`);
+    console.log(`Reasoning: ${reasoning}`);
+    if (followUps.alpha) console.log(`Follow-up Alpha: ${followUps.alpha}`);
+    if (followUps.beta) console.log(`Follow-up Beta: ${followUps.beta}`);
+    console.log('===== END EVALUATION =====\n');
+
+    return { satisfied, reasoning, followUps };
+  }
+
+  /**
+   * Process a follow-up task for a specific sub-agent
+   * @param {'alpha'|'beta'} agent - Which agent to assign the follow-up to
+   * @param {string} followUpTask - The follow-up task description
+   * @param {Function} onMessage - Dashboard callback
+   * @returns {Promise<string>} The follow-up result
+   */
+  async processFollowUpTask(agent, followUpTask, onMessage = null) {
+    const subAgent = agent === 'alpha' ? this.subAgentAlpha : this.subAgentBeta;
+    const agentLabel = agent === 'alpha' ? 'Alpha' : 'Beta';
+
+    if (onMessage) {
+      onMessage({
+        type: 'status',
+        agent,
+        message: `Processing follow-up task...`
+      });
+    }
+
+    const onCommunication = (commEvent) => {
+      this.log('inter_agent_communication', commEvent);
+      if (onMessage) onMessage(commEvent);
+    };
+
+    const result = await withRetry(
+      () => subAgent.processSubtask(followUpTask, () => {}, onCommunication),
+      `follow_up_${agent}`,
+      (retryInfo) => {
+        this.log('retry', { ...retryInfo, agent });
+        if (onMessage) {
+          onMessage({
+            type: 'retry',
+            agent,
+            message: `Retrying follow-up (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`,
+            ...retryInfo
+          });
+        }
+      }
+    );
+
+    if (!result.success) {
+      throw new Error(result.error);
+    }
+
+    console.log(`\n===== SUB-AGENT ${agentLabel} FOLLOW-UP RESULT (${result.result?.length || 0} chars) =====`);
+    console.log(result.result?.substring(0, 300) + (result.result?.length > 300 ? '...' : ''));
+    console.log(`===== END ${agentLabel} FOLLOW-UP =====\n`);
+
+    if (onMessage) {
+      onMessage({
+        type: 'task-complete',
+        agent,
+        message: 'Follow-up completed'
+      });
+    }
+
+    return result.result;
   }
 
   /**
