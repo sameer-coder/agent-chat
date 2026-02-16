@@ -17,6 +17,9 @@ class AgentDashboard {
     this.cancelModalBtn = document.getElementById('cancel-modal');
     this.connectionStatus = document.getElementById('connection-status');
     this.apiStatus = document.getElementById('api-status');
+    this.sequenceStatus = document.getElementById('sequence-status');
+    this.sequenceSummary = document.getElementById('sequence-summary');
+    this.sequenceEventsContainer = document.getElementById('sequence-events');
     this.presetSelect = document.getElementById('preset-select');
     this.freeModelsSection = document.getElementById('free-models-section');
     this.freeModelSelect = document.getElementById('free-model-select');
@@ -28,6 +31,9 @@ class AgentDashboard {
     this.openRouterModels = [];
     this.isLoadingOpenRouterModels = false;
     this.openRouterModelError = '';
+    this.sequencePath = [];
+    this.sequenceEvents = [];
+    this.maxSequenceEvents = 10;
     this.currentConfig = {
       baseUrl: 'https://api.openai.com/v1',
       model: 'gpt-4o-mini'
@@ -41,6 +47,7 @@ class AgentDashboard {
     this.bindEvents();
     this.loadFromLocalStorage();
     this.refreshOpenRouterModelSection(this.apiUrlInput.value.trim(), false);
+    this.renderSequenceView();
   }
 
   connectWebSocket() {
@@ -339,16 +346,30 @@ class AgentDashboard {
         this.addTaskBreakdown(data.message, data.subtasks);
         break;
       case 'task-assignment':
+        this.addSequenceHandoff('master-handler', data.target, 'Assigned subtask');
         this.addTaskAssignment(data.target, data.message);
         break;
       case 'streaming':
         this.handleStreamingMessage(data.agent, data.chunk);
         break;
       case 'task-complete':
+        this.addSequenceHandoff(data.agent, 'master-handler', 'Returned result');
         this.updateAgentStatus(data.agent, 'Completed');
         break;
+      case 'agent-result':
+        this.addAgentResultMessage(data.agent, data.message);
+        break;
       case 'agent-communication':
+        this.addSequenceHandoff(data.from, data.to, 'Agent communication');
         this.addAgentCommunicationMessage(data.from, data.to, data.message);
+        break;
+      case 'agent-question':
+        this.addSequenceHandoff(data.from, data.to, 'Question');
+        this.addAgentQuestionMessage(data.from, data.to, data.message);
+        break;
+      case 'agent-answer':
+        this.addSequenceHandoff(data.from, data.to, 'Answer');
+        this.addAgentAnswerMessage(data.from, data.to, data.message);
         break;
       case 'retry':
         this.addRetryMessage(data.agent, data.message, data.attempt, data.maxRetries);
@@ -357,6 +378,8 @@ class AgentDashboard {
         this.addWarningMessage(data.agent, data.message);
         break;
       case 'complete':
+        this.addSequenceHandoff('master-handler', 'user', 'Delivered final response');
+        this.setSequenceStatus('Completed');
         this.addFinalResponse(data.message);
         this.updateAgentStatus('master-handler', 'Completed');
         this.isProcessing = false;
@@ -369,6 +392,7 @@ class AgentDashboard {
         `;
         break;
       case 'error':
+        this.setSequenceStatus('Error');
         this.addErrorMessage(data.message);
         this.isProcessing = false;
         this.submitBtn.disabled = false;
@@ -393,6 +417,7 @@ class AgentDashboard {
     
     // Clear previous messages
     this.messagesContainer.innerHTML = '';
+    this.startSequence(task);
     
     // Add initial task message
     this.addUserMessage(task);
@@ -410,6 +435,101 @@ class AgentDashboard {
     
     this.ws.send(JSON.stringify({ type: 'task', task }));
     this.taskInput.value = '';
+  }
+
+  getSequenceAgentLabel(agentId) {
+    const normalized = String(agentId || '').toLowerCase();
+
+    if (normalized === 'user') return 'User';
+    if (normalized === 'master-handler' || normalized === 'master') return 'Master';
+    if (normalized === 'alpha' || normalized === 'sub-agent-alpha') return 'Alpha';
+    if (normalized === 'beta' || normalized === 'sub-agent-beta') return 'Beta';
+    if (normalized === 'system') return 'System';
+    return agentId || 'Unknown';
+  }
+
+  setSequenceStatus(status) {
+    if (!this.sequenceStatus) {
+      return;
+    }
+
+    const normalized = String(status || '').toLowerCase();
+    const classMap = {
+      idle: 'text-gray-500',
+      running: 'text-blue-600',
+      completed: 'text-emerald-600',
+      error: 'text-red-600'
+    };
+
+    this.sequenceStatus.className = `text-xs ${classMap[normalized] || 'text-gray-500'}`;
+    this.sequenceStatus.textContent = status;
+  }
+
+  startSequence(task) {
+    this.sequencePath = ['User', 'Master'];
+    this.sequenceEvents = [
+      {
+        from: 'User',
+        to: 'Master',
+        label: 'Task submitted',
+        task
+      }
+    ];
+    this.setSequenceStatus('Running');
+    this.renderSequenceView();
+  }
+
+  addSequenceHandoff(fromAgent, toAgent, label) {
+    const from = this.getSequenceAgentLabel(fromAgent);
+    const to = this.getSequenceAgentLabel(toAgent);
+    if (!from || !to || from === to) {
+      return;
+    }
+
+    const lastEvent = this.sequenceEvents[this.sequenceEvents.length - 1];
+    if (lastEvent && lastEvent.from === from && lastEvent.to === to && lastEvent.label === label) {
+      return;
+    }
+
+    if (this.sequencePath.length === 0) {
+      this.sequencePath.push(from);
+    }
+    if (this.sequencePath[this.sequencePath.length - 1] !== from) {
+      this.sequencePath.push(from);
+    }
+    if (this.sequencePath[this.sequencePath.length - 1] !== to) {
+      this.sequencePath.push(to);
+    }
+
+    this.sequenceEvents.push({ from, to, label });
+    if (this.sequenceEvents.length > this.maxSequenceEvents) {
+      this.sequenceEvents = this.sequenceEvents.slice(this.sequenceEvents.length - this.maxSequenceEvents);
+    }
+
+    this.renderSequenceView();
+  }
+
+  renderSequenceView() {
+    if (!this.sequenceSummary || !this.sequenceEventsContainer) {
+      return;
+    }
+
+    if (this.sequencePath.length < 2) {
+      this.sequenceSummary.textContent = 'No handoffs yet.';
+      this.sequenceEventsContainer.innerHTML = '';
+      this.setSequenceStatus(this.isProcessing ? 'Running' : 'Idle');
+      return;
+    }
+
+    this.sequenceSummary.textContent = this.sequencePath.join(' -> ');
+    this.sequenceEventsContainer.innerHTML = '';
+
+    this.sequenceEvents.forEach((event) => {
+      const chip = document.createElement('span');
+      chip.className = 'text-xs bg-slate-100 text-slate-700 border border-slate-200 rounded-full px-2.5 py-1';
+      chip.textContent = `${event.from} -> ${event.to} (${event.label})`;
+      this.sequenceEventsContainer.appendChild(chip);
+    });
   }
 
   addUserMessage(text) {
@@ -613,6 +733,106 @@ class AgentDashboard {
         <span class="text-xs text-indigo-500">${fromName} → ${toName}</span>
       </div>
       <p class="text-gray-700 text-sm">${this.escapeHtml(message)}</p>
+    `;
+    this.messagesContainer.appendChild(messageDiv);
+    this.scrollToBottom();
+  }
+
+  /**
+   * Add an inter-agent question message
+   */
+  addAgentQuestionMessage(from, to, message) {
+    const fromName = this.getSequenceAgentLabel(from);
+    const toName = this.getSequenceAgentLabel(to);
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message-enter bg-amber-50 border border-amber-300 rounded-lg p-3';
+    messageDiv.innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        <svg class="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <span class="text-sm font-medium text-amber-700">Question</span>
+        <span class="text-xs text-amber-600">${fromName} → ${toName}</span>
+      </div>
+      <p class="text-gray-700 text-sm italic">"${this.escapeHtml(message)}"</p>
+    `;
+    this.messagesContainer.appendChild(messageDiv);
+    this.scrollToBottom();
+  }
+
+  /**
+   * Add an inter-agent answer message
+   */
+  addAgentAnswerMessage(from, to, message) {
+    const fromName = this.getSequenceAgentLabel(from);
+    const toName = this.getSequenceAgentLabel(to);
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message-enter bg-teal-50 border border-teal-300 rounded-lg p-3';
+    messageDiv.innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        <svg class="w-4 h-4 text-teal-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <span class="text-sm font-medium text-teal-700">Answer</span>
+        <span class="text-xs text-teal-600">${fromName} → ${toName}</span>
+      </div>
+      <p class="text-gray-700 text-sm">${this.escapeHtml(message)}</p>
+    `;
+    this.messagesContainer.appendChild(messageDiv);
+    this.scrollToBottom();
+  }
+
+  /**
+   * Add a collapsible sub-agent result message
+   */
+  addAgentResultMessage(agent, message) {
+    const agentNames = {
+      'alpha': 'Sub-Agent Alpha',
+      'beta': 'Sub-Agent Beta'
+    };
+    const agentColors = {
+      'alpha': { border: 'border-cyan-300', bg: 'bg-cyan-50', badge: 'bg-cyan-500', text: 'text-cyan-700', headerBg: 'bg-cyan-100' },
+      'beta': { border: 'border-emerald-300', bg: 'bg-emerald-50', badge: 'bg-emerald-500', text: 'text-emerald-700', headerBg: 'bg-emerald-100' }
+    };
+    const colors = agentColors[agent] || agentColors['alpha'];
+    const name = agentNames[agent] || agent;
+    const collapseId = `result-${agent}-${Date.now()}`;
+
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message-enter ${colors.bg} rounded-lg border ${colors.border} shadow-sm overflow-hidden`;
+    messageDiv.innerHTML = `
+      <button
+        onclick="(function(btn){
+          var content = document.getElementById('${collapseId}');
+          var chevron = btn.querySelector('.chevron-icon');
+          if (content.classList.contains('hidden')) {
+            content.classList.remove('hidden');
+            chevron.style.transform = 'rotate(180deg)';
+          } else {
+            content.classList.add('hidden');
+            chevron.style.transform = 'rotate(0deg)';
+          }
+        })(this)"
+        class="w-full flex items-center justify-between px-4 py-3 ${colors.headerBg} hover:opacity-90 transition-opacity cursor-pointer"
+      >
+        <div class="flex items-center gap-2">
+          <div class="w-6 h-6 rounded-full ${colors.badge} flex items-center justify-center">
+            <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+          </div>
+          <span class="font-medium text-sm ${colors.text}">${name} — Completed Result</span>
+          <span class="text-xs ${colors.text} opacity-60">(click to expand)</span>
+        </div>
+        <svg class="chevron-icon w-4 h-4 ${colors.text} transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+        </svg>
+      </button>
+      <div id="${collapseId}" class="hidden px-4 py-3 border-t ${colors.border}">
+        <div class="text-gray-800 text-sm whitespace-pre-wrap max-h-96 overflow-y-auto">${this.escapeHtml(message)}</div>
+      </div>
     `;
     this.messagesContainer.appendChild(messageDiv);
     this.scrollToBottom();

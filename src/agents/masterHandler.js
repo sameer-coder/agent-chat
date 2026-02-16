@@ -11,6 +11,8 @@ Your role:
 4. Coordinate communication between Sub-Agents when needed
 5. Monitor progress and results from Sub-Agents
 6. Synthesize the outputs from both Sub-Agents into a coherent final response
+7. Answer questions from Sub-Agents when they need clarification about the original
+   task, overall goals, constraints, or high-level decisions
 
 Task Analysis Guidelines:
 - Identify if the task can be broken into independent subtasks
@@ -23,6 +25,8 @@ Communication Style:
 - Acknowledge when agents report back
 - Keep the user informed of progress
 - Provide context when assigning subtasks
+- When a Sub-Agent asks you a question, answer concisely and helpfully
+  based on the original user task and any context you have
 
 Final Synthesis:
 - Combine results from both Sub-Agents
@@ -132,6 +136,51 @@ export class MasterHandler {
       beta: null
     };
     this.executionLog = [];
+
+    // Register master handler on the communication bus so sub-agents can ask it questions
+    getCommunicationBus().registerAgent('master-handler', this);
+  }
+
+  /**
+   * Receive a question from a sub-agent and answer it based on the original task context.
+   * @param {string} fromAgentId - The sender's agent ID
+   * @param {string} question - The question text
+   * @returns {Promise<string>} Answer to the question
+   */
+  async receiveQuestion(fromAgentId, question) {
+    const fromName = fromAgentId === 'sub-agent-alpha' ? 'Sub-Agent Alpha'
+      : fromAgentId === 'sub-agent-beta' ? 'Sub-Agent Beta'
+      : fromAgentId;
+
+    this.log('question_received', { from: fromAgentId, question });
+
+    // Build a focused prompt so the master can answer using its full context
+    const answerPrompt = `${fromName} is asking you a question while working on their subtask:\n\n"${question}"\n\nAnswer the question helpfully and concisely based on the original user task and the context you have. Do NOT re-assign tasks or break down work — just answer the question.`;
+
+    try {
+      const response = await chat([
+        ...this.conversationHistory,
+        { role: 'user', content: answerPrompt }
+      ]);
+
+      this.log('question_answered', { from: fromAgentId, answerLength: response.length });
+
+      return response;
+    } catch (error) {
+      this.log('question_answer_failed', { from: fromAgentId, error: error.message });
+      return `I couldn't process your question due to an error: ${error.message}. Please proceed with your best judgment.`;
+    }
+  }
+
+  /**
+   * Receive a general message from another agent (implements the communication bus interface).
+   * @param {string} fromAgentId - The sender's agent ID
+   * @param {string} message - The message content
+   * @returns {Promise<string>} Response
+   */
+  async receiveMessage(fromAgentId, message) {
+    // Delegate to receiveQuestion for simplicity
+    return this.receiveQuestion(fromAgentId, message);
   }
 
   /**
@@ -227,6 +276,24 @@ export class MasterHandler {
     const { alphaResult, betaResult, partialFailure } = results;
     this.subTaskResults.alpha = alphaResult;
     this.subTaskResults.beta = betaResult;
+
+    // Log sub-agent results to dashboard
+    if (onMessage) {
+      if (alphaResult) {
+        onMessage({
+          type: 'agent-result',
+          agent: 'alpha',
+          message: alphaResult
+        });
+      }
+      if (betaResult) {
+        onMessage({
+          type: 'agent-result',
+          agent: 'beta',
+          message: betaResult
+        });
+      }
+    }
 
     if (partialFailure) {
       this.log('partial_failure', { 
@@ -357,43 +424,69 @@ export class MasterHandler {
    * @returns {Promise<Object>} Analysis result with subtasks
    */
   async analyzeTask(task) {
-    const analysisPrompt = `Analyze this task and break it down into exactly 2 independent subtasks that can be worked on in parallel by different agents:
+    const analysisPrompt = `Analyze this task and break it down into exactly 2 independent subtasks that can be worked on in parallel by different agents.
+
+IMPORTANT: The two subtasks MUST be DIFFERENT from each other. Each subtask should cover a distinct aspect of the overall task.
 
 Task: "${task}"
 
-Provide your response in this exact format:
+You MUST provide your response in this EXACT format (do not deviate):
 EXPLANATION: [Brief explanation of how you're breaking down the task]
-SUBTASK 1: [First subtask for Sub-Agent Alpha]
-SUBTASK 2: [Second subtask for Sub-Agent Beta]`;
+SUBTASK 1: [First subtask for Sub-Agent Alpha - a specific, distinct portion of the work]
+SUBTASK 2: [Second subtask for Sub-Agent Beta - a different, complementary portion of the work]`;
 
     const response = await chat([
-      ...this.conversationHistory,
+      { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
       { role: 'user', content: analysisPrompt }
     ]);
 
-    // Parse the response
-    const lines = response.split('\n');
+    // Parse the response - try structured format first
     let explanation = '';
     const subtasks = ['', ''];
     
+    // Try primary parsing: look for EXPLANATION:, SUBTASK 1:, SUBTASK 2: markers
+    const lines = response.split('\n');
     let currentField = '';
     for (const line of lines) {
-      if (line.startsWith('EXPLANATION:')) {
+      const stripped = line.replace(/^\*\*|\*\*$/g, '').replace(/^#+\s*/, '').trim();
+      if (/^EXPLANATION\s*:/i.test(stripped)) {
         currentField = 'explanation';
-        explanation = line.replace('EXPLANATION:', '').trim();
-      } else if (line.startsWith('SUBTASK 1:')) {
+        explanation = stripped.replace(/^EXPLANATION\s*:/i, '').trim();
+      } else if (/^SUBTASK\s*1\s*:/i.test(stripped)) {
         currentField = 'subtask1';
-        subtasks[0] = line.replace('SUBTASK 1:', '').trim();
-      } else if (line.startsWith('SUBTASK 2:')) {
+        subtasks[0] = stripped.replace(/^SUBTASK\s*1\s*:/i, '').trim();
+      } else if (/^SUBTASK\s*2\s*:/i.test(stripped)) {
         currentField = 'subtask2';
-        subtasks[1] = line.replace('SUBTASK 2:', '').trim();
-      } else if (currentField === 'explanation' && line.trim()) {
-        explanation += ' ' + line.trim();
-      } else if (currentField === 'subtask1' && line.trim()) {
-        subtasks[0] += ' ' + line.trim();
-      } else if (currentField === 'subtask2' && line.trim()) {
-        subtasks[1] += ' ' + line.trim();
+        subtasks[1] = stripped.replace(/^SUBTASK\s*2\s*:/i, '').trim();
+      } else if (currentField === 'explanation' && stripped) {
+        explanation += ' ' + stripped;
+      } else if (currentField === 'subtask1' && stripped && !/^SUBTASK/i.test(stripped)) {
+        subtasks[0] += ' ' + stripped;
+      } else if (currentField === 'subtask2' && stripped) {
+        subtasks[1] += ' ' + stripped;
       }
+    }
+
+    // Fallback: if parsing produced empty/identical subtasks, try alternate patterns
+    if (!subtasks[0] || !subtasks[1] || subtasks[0] === subtasks[1]) {
+      // Try numbered list: "1. ..." / "2. ..."
+      const numbered = response.match(/(?:^|\n)\s*1[\.\):]\s*(.+?)(?=\n\s*2[\.\):])/s);
+      const numbered2 = response.match(/(?:^|\n)\s*2[\.\):]\s*(.+?)(?=\n\s*(?:3[\.\):]|$))/s);
+      if (numbered && numbered2) {
+        subtasks[0] = numbered[1].trim().split('\n')[0].trim();
+        subtasks[1] = numbered2[1].trim().split('\n')[0].trim();
+      }
+    }
+
+    // Safety: if subtasks are still empty, use generic halves
+    if (!subtasks[0]) subtasks[0] = `First half of the task: ${task}`;
+    if (!subtasks[1]) subtasks[1] = `Second half of the task: ${task}`;
+    if (!explanation) explanation = 'Breaking the task into two complementary subtasks.';
+
+    // Final guard: if somehow both subtasks are identical, differentiate them
+    if (subtasks[0].trim() === subtasks[1].trim()) {
+      subtasks[0] = `Research and analyze the first aspect of: ${task}`;
+      subtasks[1] = `Research and analyze the second/complementary aspect of: ${task}`;
     }
 
     return {
@@ -425,15 +518,7 @@ SUBTASK 2: [Second subtask for Sub-Agent Beta]`;
 
     // Process with retry
     const result = await withRetry(
-      () => this.subAgentAlpha.processSubtask(subtask, (chunk) => {
-        if (onMessage) {
-          onMessage({
-            type: 'streaming',
-            agent: 'alpha',
-            chunk: chunk
-          });
-        }
-      }, onCommunication),
+      () => this.subAgentAlpha.processSubtask(subtask, () => {}, onCommunication),
       'subtask_alpha',
       (retryInfo) => {
         this.log('retry', { ...retryInfo, agent: 'alpha' });
@@ -451,6 +536,10 @@ SUBTASK 2: [Second subtask for Sub-Agent Beta]`;
     if (!result.success) {
       throw new Error(result.error);
     }
+
+    console.log(`\n===== SUB-AGENT ALPHA RESULT (${result.result?.length || 0} chars) =====`);
+    console.log(result.result?.substring(0, 300) + (result.result?.length > 300 ? '...' : ''));
+    console.log('===== END ALPHA RESULT =====\n');
 
     if (onMessage) {
       onMessage({
@@ -486,15 +575,7 @@ SUBTASK 2: [Second subtask for Sub-Agent Beta]`;
 
     // Process with retry
     const result = await withRetry(
-      () => this.subAgentBeta.processSubtask(subtask, (chunk) => {
-        if (onMessage) {
-          onMessage({
-            type: 'streaming',
-            agent: 'beta',
-            chunk: chunk
-          });
-        }
-      }, onCommunication),
+      () => this.subAgentBeta.processSubtask(subtask, () => {}, onCommunication),
       'subtask_beta',
       (retryInfo) => {
         this.log('retry', { ...retryInfo, agent: 'beta' });
@@ -512,6 +593,10 @@ SUBTASK 2: [Second subtask for Sub-Agent Beta]`;
     if (!result.success) {
       throw new Error(result.error);
     }
+
+    console.log(`\n===== SUB-AGENT BETA RESULT (${result.result?.length || 0} chars) =====`);
+    console.log(result.result?.substring(0, 300) + (result.result?.length > 300 ? '...' : ''));
+    console.log('===== END BETA RESULT =====\n');
 
     if (onMessage) {
       onMessage({
@@ -537,19 +622,28 @@ SUBTASK 2: [Second subtask for Sub-Agent Beta]`;
       ? '\n\nNote: One of the sub-agents encountered issues. Please work with the available results and note any limitations in your synthesis.'
       : '';
 
-    const synthesisPrompt = `The user originally requested: "${originalTask}"
+    const synthesisPrompt = `You are the Master Handler synthesizing results from your two Sub-Agents.
 
-Sub-Agent Alpha completed their subtask with:
+The user originally requested: "${originalTask}"
+
+Sub-Agent Alpha completed their subtask and produced this output:
+--- ALPHA OUTPUT START ---
 ${alphaResult}
+--- ALPHA OUTPUT END ---
 
-Sub-Agent Beta completed their subtask with:
+Sub-Agent Beta completed their subtask and produced this output:
+--- BETA OUTPUT START ---
 ${betaResult}
+--- BETA OUTPUT END ---
 ${failureNote}
 
-Please synthesize these results into a coherent, complete final response. Combine the findings, address any overlaps or conflicts, and present a unified solution.`;
+IMPORTANT: The outputs above ARE the completed results from the sub-agents. Do NOT say you haven't received them. Synthesize these results into a coherent, complete final response for the user. Combine the findings, address any overlaps or conflicts, and present a unified solution.`;
 
+    // Use a CLEAN messages array — do NOT pass conversationHistory here.
+    // The history contains analysis prompts, question exchanges, etc. that confuse
+    // the LLM into thinking the sub-agent outputs haven't been provided yet.
     const response = await chat([
-      ...this.conversationHistory,
+      { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
       { role: 'user', content: synthesisPrompt }
     ]);
 
@@ -578,7 +672,10 @@ Please synthesize these results into a coherent, complete final response. Combin
     this.executionLog = [];
     
     // Clear communication bus history
-    getCommunicationBus().clearHistory();
+    const bus = getCommunicationBus();
+    bus.clearHistory();
+    // Re-register master handler
+    bus.registerAgent('master-handler', this);
   }
 }
 

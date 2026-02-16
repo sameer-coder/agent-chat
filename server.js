@@ -289,12 +289,8 @@ async function handleTask(task, socket) {
       broadcast(message);
     });
     
-    // Task complete
-    broadcast({
-      type: 'complete',
-      agent: 'master-handler',
-      message: 'Task completed successfully'
-    });
+    // processTask already sends a 'complete' event with the synthesized result.
+    // No additional broadcast needed here.
   } catch (error) {
     socket.send(JSON.stringify({
       type: 'error',
