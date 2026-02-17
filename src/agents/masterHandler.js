@@ -275,6 +275,15 @@ export class MasterHandler {
       });
     }
 
+    // Update master status to waiting
+    if (onMessage) {
+      onMessage({
+        type: 'status',
+        agent: 'master-handler',
+        message: 'Waiting for Sub-Agents to complete...'
+      });
+    }
+
     // Process both subtasks in parallel with error recovery
     const results = await this.processSubTasksWithRecovery(subtasks, onMessage);
 

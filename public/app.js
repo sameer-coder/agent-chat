@@ -17,13 +17,23 @@ class AgentDashboard {
     this.cancelModalBtn = document.getElementById('cancel-modal');
     this.connectionStatus = document.getElementById('connection-status');
     this.apiStatus = document.getElementById('api-status');
-    this.sequenceStatus = document.getElementById('sequence-status');
-    this.sequenceSummary = document.getElementById('sequence-summary');
-    this.sequenceEventsContainer = document.getElementById('sequence-events');
     this.presetSelect = document.getElementById('preset-select');
     this.freeModelsSection = document.getElementById('free-models-section');
     this.freeModelSelect = document.getElementById('free-model-select');
     this.freeOnlyCheckbox = document.getElementById('free-only-checkbox');
+    
+    // Agent result modal
+    this.agentResultModal = document.getElementById('agent-result-modal');
+    this.agentResultModalTitle = document.getElementById('agent-result-modal-title');
+    this.agentResultModalBody = document.getElementById('agent-result-modal-body');
+    this.closeAgentResultModalBtn = document.getElementById('close-agent-result-modal');
+    
+    // Agent cards
+    this.alphaCard = document.getElementById('alpha-card');
+    this.betaCard = document.getElementById('beta-card');
+    
+    // Store latest agent results for modal viewing
+    this.agentResults = { alpha: null, beta: null };
     
     this.isConnected = false;
     this.isProcessing = false;
@@ -31,9 +41,6 @@ class AgentDashboard {
     this.openRouterModels = [];
     this.isLoadingOpenRouterModels = false;
     this.openRouterModelError = '';
-    this.sequencePath = [];
-    this.sequenceEvents = [];
-    this.maxSequenceEvents = 10;
     this.currentConfig = {
       baseUrl: 'https://api.openai.com/v1',
       model: 'gpt-4o-mini'
@@ -47,7 +54,6 @@ class AgentDashboard {
     this.bindEvents();
     this.loadFromLocalStorage();
     this.refreshOpenRouterModelSection(this.apiUrlInput.value.trim(), false);
-    this.renderSequenceView();
   }
 
   connectWebSocket() {
@@ -121,6 +127,24 @@ class AgentDashboard {
     if (this.freeOnlyCheckbox) {
       this.freeOnlyCheckbox.addEventListener('change', () => {
         this.renderOpenRouterModelOptions();
+      });
+    }
+
+    // Agent card click → open result modal
+    if (this.alphaCard) {
+      this.alphaCard.addEventListener('click', () => this.showAgentResultModal('alpha'));
+    }
+    if (this.betaCard) {
+      this.betaCard.addEventListener('click', () => this.showAgentResultModal('beta'));
+    }
+
+    // Agent result modal close
+    if (this.closeAgentResultModalBtn) {
+      this.closeAgentResultModalBtn.addEventListener('click', () => this.hideAgentResultModal());
+    }
+    if (this.agentResultModal) {
+      this.agentResultModal.addEventListener('click', (e) => {
+        if (e.target === this.agentResultModal) this.hideAgentResultModal();
       });
     }
     
@@ -326,10 +350,36 @@ class AgentDashboard {
     if (configured) {
       dot.className = 'w-2 h-2 rounded-full bg-green-500';
       const modelName = this.currentConfig.model || 'Unknown';
-      text.textContent = `API: ${modelName}`;
+      const provider = this.extractProviderName(this.currentConfig.baseUrl);
+      text.textContent = provider ? `${provider} · ${modelName}` : `API: ${modelName}`;
     } else {
       dot.className = 'w-2 h-2 rounded-full bg-red-500';
       text.textContent = 'API Not Configured';
+    }
+  }
+
+  /**
+   * Extract a human-friendly provider name from the API base URL
+   */
+  extractProviderName(baseUrl) {
+    if (!baseUrl) return '';
+    try {
+      const hostname = new URL(baseUrl).hostname.toLowerCase();
+      if (hostname.includes('openai.com')) return 'OpenAI';
+      if (hostname.includes('openrouter.ai')) return 'OpenRouter';
+      if (hostname.includes('deepseek.com')) return 'DeepSeek';
+      if (hostname.includes('nvidia.com')) return 'NVIDIA';
+      if (hostname.includes('strongwall.ai')) return 'Strongwall';
+      if (hostname.includes('localhost') || hostname.includes('127.0.0.1')) {
+        if (baseUrl.includes('11434')) return 'Ollama';
+        if (baseUrl.includes('1234')) return 'LM Studio';
+        return 'Local';
+      }
+      // Use the domain name itself as fallback
+      const parts = hostname.replace('www.', '').split('.');
+      return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+    } catch (e) {
+      return '';
     }
   }
 
@@ -346,36 +396,31 @@ class AgentDashboard {
         this.addTaskBreakdown(data.message, data.subtasks);
         break;
       case 'task-assignment':
-        this.addSequenceHandoff('master-handler', data.target, 'Assigned subtask');
         this.addTaskAssignment(data.target, data.message);
         break;
       case 'streaming':
         this.handleStreamingMessage(data.agent, data.chunk);
         break;
       case 'task-complete':
-        this.addSequenceHandoff(data.agent, 'master-handler', 'Returned result');
         this.updateAgentStatus(data.agent, 'Completed');
         break;
       case 'agent-result':
+        this.agentResults[data.agent] = data.message;
         this.addAgentResultMessage(data.agent, data.message, data.round || 1);
         break;
       case 'evaluation':
         this.addEvaluationMessage(data.message, data.satisfied, data.round);
         break;
       case 'follow-up-assignment':
-        this.addSequenceHandoff('master-handler', data.target, `Follow-up round ${data.round}`);
         this.addFollowUpAssignment(data.target, data.message, data.round);
         break;
       case 'agent-communication':
-        this.addSequenceHandoff(data.from, data.to, 'Agent communication');
         this.addAgentCommunicationMessage(data.from, data.to, data.message);
         break;
       case 'agent-question':
-        this.addSequenceHandoff(data.from, data.to, 'Question');
         this.addAgentQuestionMessage(data.from, data.to, data.message);
         break;
       case 'agent-answer':
-        this.addSequenceHandoff(data.from, data.to, 'Answer');
         this.addAgentAnswerMessage(data.from, data.to, data.message);
         break;
       case 'retry':
@@ -385,8 +430,6 @@ class AgentDashboard {
         this.addWarningMessage(data.agent, data.message);
         break;
       case 'complete':
-        this.addSequenceHandoff('master-handler', 'user', 'Delivered final response');
-        this.setSequenceStatus('Completed');
         this.addFinalResponse(data.message);
         this.updateAgentStatus('master-handler', 'Completed');
         this.isProcessing = false;
@@ -399,7 +442,6 @@ class AgentDashboard {
         `;
         break;
       case 'error':
-        this.setSequenceStatus('Error');
         this.addErrorMessage(data.message);
         this.isProcessing = false;
         this.submitBtn.disabled = false;
@@ -424,7 +466,7 @@ class AgentDashboard {
     
     // Clear previous messages
     this.messagesContainer.innerHTML = '';
-    this.startSequence(task);
+    this.agentResults = { alpha: null, beta: null };
     
     // Add initial task message
     this.addUserMessage(task);
@@ -444,99 +486,71 @@ class AgentDashboard {
     this.taskInput.value = '';
   }
 
-  getSequenceAgentLabel(agentId) {
+  /**
+   * Get a human-readable agent label
+   */
+  getAgentLabel(agentId) {
     const normalized = String(agentId || '').toLowerCase();
-
     if (normalized === 'user') return 'User';
-    if (normalized === 'master-handler' || normalized === 'master') return 'Master';
-    if (normalized === 'alpha' || normalized === 'sub-agent-alpha') return 'Alpha';
-    if (normalized === 'beta' || normalized === 'sub-agent-beta') return 'Beta';
+    if (normalized === 'master-handler' || normalized === 'master') return 'Master Handler';
+    if (normalized === 'alpha' || normalized === 'sub-agent-alpha') return 'Sub-Agent Alpha';
+    if (normalized === 'beta' || normalized === 'sub-agent-beta') return 'Sub-Agent Beta';
     if (normalized === 'system') return 'System';
     return agentId || 'Unknown';
   }
 
-  setSequenceStatus(status) {
-    if (!this.sequenceStatus) {
-      return;
+  /**
+   * Create collapsible text for long content. Shows first few lines with expand toggle.
+   * @param {string} text - The raw text
+   * @param {number} previewLines - Number of lines to show before collapsing
+   * @returns {string} HTML string
+   */
+  makeCollapsible(text, previewLines = 4) {
+    const escaped = this.escapeHtml(text);
+    const lines = escaped.split('\n');
+    if (lines.length <= previewLines + 2) {
+      // Not long enough to collapse
+      return `<div class="whitespace-pre-wrap">${escaped}</div>`;
     }
-
-    const normalized = String(status || '').toLowerCase();
-    const classMap = {
-      idle: 'text-gray-500',
-      running: 'text-blue-600',
-      completed: 'text-emerald-600',
-      error: 'text-red-600'
-    };
-
-    this.sequenceStatus.className = `text-xs ${classMap[normalized] || 'text-gray-500'}`;
-    this.sequenceStatus.textContent = status;
+    const preview = lines.slice(0, previewLines).join('\n');
+    const rest = lines.slice(previewLines).join('\n');
+    const remaining = lines.length - previewLines;
+    const collapseId = `collapse-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return `
+      <div class="whitespace-pre-wrap">${preview}</div>
+      <div id="${collapseId}" class="hidden whitespace-pre-wrap">${rest}</div>
+      <button onclick="(function(btn){
+        var el = document.getElementById('${collapseId}');
+        if (el.classList.contains('hidden')) {
+          el.classList.remove('hidden');
+          btn.textContent = '▲ Show less';
+        } else {
+          el.classList.add('hidden');
+          btn.textContent = '▼ Show more (${remaining} more lines)';
+        }
+      })(this)" class="text-xs text-blue-600 hover:text-blue-800 mt-1 font-medium cursor-pointer">▼ Show more (${remaining} more lines)</button>
+    `;
   }
 
-  startSequence(task) {
-    this.sequencePath = ['User', 'Master'];
-    this.sequenceEvents = [
-      {
-        from: 'User',
-        to: 'Master',
-        label: 'Task submitted',
-        task
-      }
-    ];
-    this.setSequenceStatus('Running');
-    this.renderSequenceView();
+  /**
+   * Show agent result modal
+   */
+  showAgentResultModal(agent) {
+    const result = this.agentResults[agent];
+    if (!result) return;
+    const names = { alpha: 'Sub-Agent Alpha', beta: 'Sub-Agent Beta' };
+    this.agentResultModalTitle.textContent = `${names[agent] || agent} — Result`;
+    this.agentResultModalBody.textContent = result;
+    this.agentResultModal.classList.remove('hidden');
+    this.agentResultModal.classList.add('flex');
   }
 
-  addSequenceHandoff(fromAgent, toAgent, label) {
-    const from = this.getSequenceAgentLabel(fromAgent);
-    const to = this.getSequenceAgentLabel(toAgent);
-    if (!from || !to || from === to) {
-      return;
-    }
-
-    const lastEvent = this.sequenceEvents[this.sequenceEvents.length - 1];
-    if (lastEvent && lastEvent.from === from && lastEvent.to === to && lastEvent.label === label) {
-      return;
-    }
-
-    if (this.sequencePath.length === 0) {
-      this.sequencePath.push(from);
-    }
-    if (this.sequencePath[this.sequencePath.length - 1] !== from) {
-      this.sequencePath.push(from);
-    }
-    if (this.sequencePath[this.sequencePath.length - 1] !== to) {
-      this.sequencePath.push(to);
-    }
-
-    this.sequenceEvents.push({ from, to, label });
-    if (this.sequenceEvents.length > this.maxSequenceEvents) {
-      this.sequenceEvents = this.sequenceEvents.slice(this.sequenceEvents.length - this.maxSequenceEvents);
-    }
-
-    this.renderSequenceView();
-  }
-
-  renderSequenceView() {
-    if (!this.sequenceSummary || !this.sequenceEventsContainer) {
-      return;
-    }
-
-    if (this.sequencePath.length < 2) {
-      this.sequenceSummary.textContent = 'No handoffs yet.';
-      this.sequenceEventsContainer.innerHTML = '';
-      this.setSequenceStatus(this.isProcessing ? 'Running' : 'Idle');
-      return;
-    }
-
-    this.sequenceSummary.textContent = this.sequencePath.join(' -> ');
-    this.sequenceEventsContainer.innerHTML = '';
-
-    this.sequenceEvents.forEach((event) => {
-      const chip = document.createElement('span');
-      chip.className = 'text-xs bg-slate-100 text-slate-700 border border-slate-200 rounded-full px-2.5 py-1';
-      chip.textContent = `${event.from} -> ${event.to} (${event.label})`;
-      this.sequenceEventsContainer.appendChild(chip);
-    });
+  /**
+   * Hide agent result modal
+   */
+  hideAgentResultModal() {
+    this.agentResultModal.classList.add('hidden');
+    this.agentResultModal.classList.remove('flex');
   }
 
   addUserMessage(text) {
@@ -639,7 +653,7 @@ class AgentDashboard {
         </svg>
         <span class="text-sm text-gray-500">Assigned to ${agentNames[agent]}</span>
       </div>
-      <p class="text-gray-700 text-sm">${this.escapeHtml(message)}</p>
+      <p class="text-gray-700 text-sm">${this.makeCollapsible(message, 3)}</p>
     `;
     this.messagesContainer.appendChild(messageDiv);
     this.scrollToBottom();
@@ -696,7 +710,7 @@ class AgentDashboard {
         <span class="font-semibold">Final Synthesis</span>
       </div>
       <div class="prose prose-sm max-w-none">
-        <p class="text-gray-800 whitespace-pre-wrap">${this.escapeHtml(message)}</p>
+        <div class="text-gray-800">${this.makeCollapsible(message, 8)}</div>
       </div>
     `;
     this.messagesContainer.appendChild(messageDiv);
@@ -739,7 +753,7 @@ class AgentDashboard {
         <span class="text-sm font-medium text-indigo-700">Agent Communication</span>
         <span class="text-xs text-indigo-500">${fromName} → ${toName}</span>
       </div>
-      <p class="text-gray-700 text-sm">${this.escapeHtml(message)}</p>
+      <p class="text-gray-700 text-sm">${this.makeCollapsible(message, 4)}</p>
     `;
     this.messagesContainer.appendChild(messageDiv);
     this.scrollToBottom();
@@ -749,8 +763,8 @@ class AgentDashboard {
    * Add an inter-agent question message
    */
   addAgentQuestionMessage(from, to, message) {
-    const fromName = this.getSequenceAgentLabel(from);
-    const toName = this.getSequenceAgentLabel(to);
+    const fromName = this.getAgentLabel(from);
+    const toName = this.getAgentLabel(to);
     
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message-enter bg-amber-50 border border-amber-300 rounded-lg p-3';
@@ -762,7 +776,7 @@ class AgentDashboard {
         <span class="text-sm font-medium text-amber-700">Question</span>
         <span class="text-xs text-amber-600">${fromName} → ${toName}</span>
       </div>
-      <p class="text-gray-700 text-sm italic">"${this.escapeHtml(message)}"</p>
+      <div class="text-gray-700 text-sm italic">${this.makeCollapsible(message, 3)}</div>
     `;
     this.messagesContainer.appendChild(messageDiv);
     this.scrollToBottom();
@@ -772,8 +786,8 @@ class AgentDashboard {
    * Add an inter-agent answer message
    */
   addAgentAnswerMessage(from, to, message) {
-    const fromName = this.getSequenceAgentLabel(from);
-    const toName = this.getSequenceAgentLabel(to);
+    const fromName = this.getAgentLabel(from);
+    const toName = this.getAgentLabel(to);
     
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message-enter bg-teal-50 border border-teal-300 rounded-lg p-3';
@@ -785,7 +799,7 @@ class AgentDashboard {
         <span class="text-sm font-medium text-teal-700">Answer</span>
         <span class="text-xs text-teal-600">${fromName} → ${toName}</span>
       </div>
-      <p class="text-gray-700 text-sm">${this.escapeHtml(message)}</p>
+      <div class="text-gray-700 text-sm">${this.makeCollapsible(message, 4)}</div>
     `;
     this.messagesContainer.appendChild(messageDiv);
     this.scrollToBottom();
@@ -874,7 +888,7 @@ class AgentDashboard {
             <span class="text-xs px-2 py-0.5 rounded-full ${badgeColor} font-medium">${verdictText}</span>
             <span class="text-xs text-gray-400">Round ${round}</span>
           </div>
-          <p class="text-gray-700 text-sm">${this.escapeHtml(reasoning)}</p>
+          <div class="text-gray-700 text-sm">${this.makeCollapsible(reasoning, 3)}</div>
         </div>
       </div>
     `;
@@ -909,7 +923,7 @@ class AgentDashboard {
         <span class="text-sm font-medium text-gray-700">Follow-up assigned to ${name}</span>
         <span class="text-xs text-gray-400">Round ${round}</span>
       </div>
-      <p class="text-gray-600 text-sm">${this.escapeHtml(task)}</p>
+      <div class="text-gray-600 text-sm">${this.makeCollapsible(task, 3)}</div>
     `;
     this.messagesContainer.appendChild(messageDiv);
     this.scrollToBottom();
@@ -976,6 +990,12 @@ class AgentDashboard {
     const statusEl = statusElements[agent];
     if (statusEl) {
       statusEl.textContent = status;
+    }
+
+    // Update card clickability for sub-agents
+    const cardEl = agent === 'alpha' ? this.alphaCard : agent === 'beta' ? this.betaCard : null;
+    if (cardEl && this.agentResults[agent]) {
+      cardEl.classList.add('cursor-pointer', 'hover:bg-gray-100', 'hover:border-gray-300');
     }
   }
 
