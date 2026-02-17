@@ -38,6 +38,9 @@ class AgentDashboard {
     // Dynamic agent names (updated from server each task)
     this.agentNames = { alpha: 'Agent Alpha', beta: 'Agent Beta' };
     
+    // Streaming state: accumulates raw text for each agent during streaming
+    this.streamingBuffers = {};
+    
     this.isConnected = false;
     this.isProcessing = false;
     this.apiConfigured = false;
@@ -406,6 +409,9 @@ class AgentDashboard {
       case 'streaming':
         this.handleStreamingMessage(data.agent, data.chunk);
         break;
+      case 'stream-end':
+        this.handleStreamEnd(data.agent);
+        break;
       case 'task-complete':
         this.updateAgentStatus(data.agent, 'Completed');
         break;
@@ -450,6 +456,20 @@ class AgentDashboard {
         this.addErrorMessage(data.message);
         this.isProcessing = false;
         this.submitBtn.disabled = false;
+        this.submitBtn.innerHTML = `
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+          Execute
+        `;
+        // Clean up any active streaming containers
+        for (const agent of ['alpha', 'beta']) {
+          const streamingEl = document.getElementById(`streaming-container-${agent}`);
+          if (streamingEl) streamingEl.remove();
+          delete this.streamingBuffers[agent];
+        }
+        // Reset sidebar statuses
+        this.updateAgentStatus('master-handler', 'Error');
         break;
     }
   }
@@ -472,6 +492,20 @@ class AgentDashboard {
     // Clear previous messages
     this.messagesContainer.innerHTML = '';
     this.agentResults = { alpha: null, beta: null };
+    this.streamingBuffers = {};
+    
+    // Reset sidebar agent statuses
+    this.updateAgentStatus('master-handler', 'Idle');
+    this.updateAgentStatus('alpha', 'Idle');
+    this.updateAgentStatus('beta', 'Idle');
+    
+    // Reset agent card clickability
+    if (this.alphaCard) {
+      this.alphaCard.classList.remove('cursor-pointer', 'hover:bg-gray-100', 'hover:border-gray-300');
+    }
+    if (this.betaCard) {
+      this.betaCard.classList.remove('cursor-pointer', 'hover:bg-gray-100', 'hover:border-gray-300');
+    }
     
     // Add initial task message
     this.addUserMessage(task);
@@ -649,36 +683,66 @@ class AgentDashboard {
   }
 
   handleStreamingMessage(agent, chunk) {
-    let messageEl = document.getElementById(`streaming-${agent}`);
+    // Initialize buffer for this agent if needed
+    if (!this.streamingBuffers[agent]) {
+      this.streamingBuffers[agent] = '';
+    }
+    this.streamingBuffers[agent] += chunk;
+
+    let container = document.getElementById(`streaming-container-${agent}`);
     
     const agentColors = {
-      'alpha': 'border-cyan-200',
-      'beta': 'border-emerald-200'
+      'alpha': { border: 'border-cyan-300', bg: 'bg-cyan-50', dot: 'bg-cyan-500', text: 'text-cyan-700', headerBg: 'bg-cyan-100' },
+      'beta': { border: 'border-emerald-300', bg: 'bg-emerald-50', dot: 'bg-emerald-500', text: 'text-emerald-700', headerBg: 'bg-emerald-100' }
     };
+    const colors = agentColors[agent] || agentColors['alpha'];
     
-    if (!messageEl) {
-      const container = document.createElement('div');
-      container.className = 'message-enter';
+    if (!container) {
+      container = document.createElement('div');
+      container.id = `streaming-container-${agent}`;
+      container.className = `message-enter ${colors.bg} rounded-lg border ${colors.border} shadow-sm overflow-hidden`;
       container.innerHTML = `
-        <div class="bg-white rounded-lg p-4 border ${agentColors[agent]} shadow-sm">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="w-6 h-6 rounded-full ${agent === 'alpha' ? 'bg-cyan-500' : 'bg-emerald-500'} flex items-center justify-center">
-              <svg class="w-3 h-3 text-white animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-              </svg>
-            </div>
-            <span class="font-medium text-sm">${this.agentNames[agent] || agent}</span>
-            <span class="text-xs text-gray-400 animate-pulse">Thinking...</span>
+        <div class="flex items-center gap-2 px-4 py-3 ${colors.headerBg}">
+          <div class="w-6 h-6 rounded-full ${colors.dot} flex items-center justify-center">
+            <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
           </div>
-          <p id="streaming-${agent}" class="text-gray-700 text-sm whitespace-pre-wrap"></p>
+          <span class="font-medium text-sm ${colors.text}">${this.escapeHtml(this.agentNames[agent] || agent)}</span>
+          <span class="streaming-indicator text-xs ${colors.text} opacity-70 flex items-center gap-1">
+            <span class="inline-block w-1.5 h-1.5 rounded-full ${colors.dot} animate-pulse"></span>
+            Streaming...
+          </span>
+        </div>
+        <div id="streaming-body-${agent}" class="px-4 py-3 border-t ${colors.border}">
+          <div id="streaming-content-${agent}" class="md-prose text-gray-800 text-sm"></div>
+          <span class="streaming-cursor"></span>
         </div>
       `;
       this.messagesContainer.appendChild(container);
     }
     
-    messageEl = document.getElementById(`streaming-${agent}`);
-    messageEl.textContent += chunk;
+    // Render accumulated markdown
+    const contentEl = document.getElementById(`streaming-content-${agent}`);
+    if (contentEl) {
+      contentEl.innerHTML = this.renderMarkdown(this.streamingBuffers[agent]);
+    }
     this.scrollToBottom();
+  }
+
+  handleStreamEnd(agent) {
+    // Remove the cursor from the streaming container
+    const container = document.getElementById(`streaming-container-${agent}`);
+    if (container) {
+      const cursor = container.querySelector('.streaming-cursor');
+      if (cursor) cursor.remove();
+      const indicator = container.querySelector('.streaming-indicator');
+      if (indicator) {
+        indicator.innerHTML = '<span class="text-xs opacity-60">✓ Complete</span>';
+      }
+    }
+    // Clear the streaming buffer
+    delete this.streamingBuffers[agent];
   }
 
   addFinalResponse(message) {
@@ -814,6 +878,14 @@ class AgentDashboard {
    * Add a collapsible sub-agent result message
    */
   addAgentResultMessage(agent, message, round = 1) {
+    // Remove the streaming container for this agent since we now have the final result
+    const streamingContainer = document.getElementById(`streaming-container-${agent}`);
+    if (streamingContainer) {
+      streamingContainer.remove();
+    }
+    // Clear any leftover streaming buffer
+    delete this.streamingBuffers[agent];
+
     const agentColors = {
       'alpha': { border: 'border-cyan-300', bg: 'bg-cyan-50', badge: 'bg-cyan-500', text: 'text-cyan-700', headerBg: 'bg-cyan-100' },
       'beta': { border: 'border-emerald-300', bg: 'bg-emerald-50', badge: 'bg-emerald-500', text: 'text-emerald-700', headerBg: 'bg-emerald-100' }

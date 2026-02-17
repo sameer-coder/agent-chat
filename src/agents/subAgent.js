@@ -234,6 +234,8 @@ export class SubAgent {
   constructor(name, agentId) {
     this.name = name;
     this.agentId = agentId;
+    this.displayName = name; // Dynamic display name (e.g. "Tidal Agent")
+    this.otherDisplayName = null; // Display name of the other sub-agent
     this.currentTask = null;
     this.conversationHistory = [
       { role: 'system', content: SUB_AGENT_SYSTEM_PROMPT }
@@ -242,6 +244,22 @@ export class SubAgent {
     this.maxRetries = 3;
     this.retryDelayMs = 1000;
     this.questionsAsked = 0;
+  }
+
+  /**
+   * Set the dynamic display name for this agent
+   * @param {string} displayName - e.g. "Tidal Agent"
+   */
+  setDisplayName(displayName) {
+    this.displayName = displayName;
+  }
+
+  /**
+   * Set the display name of the other sub-agent (for conversation context)
+   * @param {string} otherDisplayName - e.g. "Nexus Agent"
+   */
+  setOtherDisplayName(otherDisplayName) {
+    this.otherDisplayName = otherDisplayName;
   }
 
   /**
@@ -279,14 +297,15 @@ export class SubAgent {
     this.currentTask = subtask;
     this.questionsAsked = 0;
 
-    // Identify self to the LLM
-    const selfLabel = this.name; // "Alpha" or "Beta"
-    const otherLabel = selfLabel === 'Alpha' ? 'beta' : 'alpha';
+    // Identify self to the LLM using the dynamic display name
+    const selfLabel = this.displayName; // e.g. "Tidal Agent"
+    const otherLabel = this.name === 'Alpha' ? 'beta' : 'alpha';
+    const otherName = this.otherDisplayName || (this.name === 'Alpha' ? 'Beta' : 'Alpha');
 
     // Add user message with the subtask
     this.conversationHistory.push({
       role: 'user',
-      content: `You are Agent ${selfLabel}. Master Handler has assigned you this subtask: "${subtask}".\n\nPlease complete this subtask and report your findings/results.\nIf you need information you don't have, ask a question using:\nASK_QUESTION_TO: <master|${otherLabel}> QUESTION: <your question>\nOtherwise, produce your final answer directly.`
+      content: `You are ${selfLabel}. Master Handler has assigned you this subtask: "${subtask}".\n\nPlease complete this subtask and report your findings/results.\nIf you need information you don't have, ask a question using:\nASK_QUESTION_TO: <master|${otherLabel}> QUESTION: <your question>\n(Note: "${otherLabel}" refers to ${otherName})\nOtherwise, produce your final answer directly.`
     });
 
     try {
@@ -327,8 +346,8 @@ export class SubAgent {
 
           if (result.success) {
             const answererLabel = result.resolvedTarget === 'master-handler' ? 'Master Handler'
-              : result.resolvedTarget === 'sub-agent-alpha' ? 'Agent Alpha'
-              : result.resolvedTarget === 'sub-agent-beta' ? 'Agent Beta'
+              : result.resolvedTarget === 'sub-agent-alpha' ? (this.name === 'Alpha' ? this.displayName : (this.otherDisplayName || 'Alpha'))
+              : result.resolvedTarget === 'sub-agent-beta' ? (this.name === 'Beta' ? this.displayName : (this.otherDisplayName || 'Beta'))
               : result.resolvedTarget;
 
             answerParts.push(`Answer from ${answererLabel}: ${result.answer}`);
@@ -453,8 +472,8 @@ export class SubAgent {
    * @returns {Promise<string>} Answer to the question
    */
   async receiveQuestion(fromAgentId, question) {
-    const fromName = fromAgentId === 'sub-agent-alpha' ? 'Alpha'
-      : fromAgentId === 'sub-agent-beta' ? 'Beta'
+    const fromName = fromAgentId === 'sub-agent-alpha' ? (this.name === 'Alpha' ? this.displayName : (this.otherDisplayName || 'Alpha'))
+      : fromAgentId === 'sub-agent-beta' ? (this.name === 'Beta' ? this.displayName : (this.otherDisplayName || 'Beta'))
       : fromAgentId === 'master-handler' ? 'Master Handler'
       : fromAgentId;
 
@@ -482,8 +501,9 @@ export class SubAgent {
    * @returns {Promise<string>} Response to the message
    */
   async receiveMessage(fromAgentId, message) {
-    const fromName = fromAgentId === 'sub-agent-alpha' ? 'Alpha' : 
-                     fromAgentId === 'sub-agent-beta' ? 'Beta' : fromAgentId;
+    const fromName = fromAgentId === 'sub-agent-alpha' ? (this.name === 'Alpha' ? this.displayName : (this.otherDisplayName || 'Alpha'))
+      : fromAgentId === 'sub-agent-beta' ? (this.name === 'Beta' ? this.displayName : (this.otherDisplayName || 'Beta'))
+      : fromAgentId;
     
     this.conversationHistory.push({
       role: 'user',

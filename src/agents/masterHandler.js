@@ -153,6 +153,13 @@ export class MasterHandler {
     this.agentNames = generateAgentNames();
     this.subAgentAlpha = createSubAgentAlpha();
     this.subAgentBeta = createSubAgentBeta();
+
+    // Pass dynamic display names to sub-agents so LLM prompts use them
+    this.subAgentAlpha.setDisplayName(this.agentNames.alpha);
+    this.subAgentAlpha.setOtherDisplayName(this.agentNames.beta);
+    this.subAgentBeta.setDisplayName(this.agentNames.beta);
+    this.subAgentBeta.setOtherDisplayName(this.agentNames.alpha);
+
     this.conversationHistory = [
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT }
     ];
@@ -545,7 +552,7 @@ export class MasterHandler {
       alphaValue = alphaResult.value;
     } else {
       this.log('subtask_alpha_failed', { error: alphaResult.reason?.message });
-      alphaValue = `[Agent Alpha failed: ${alphaResult.reason?.message || 'Unknown error'}]`;
+      alphaValue = `[${this.agentNames.alpha} failed: ${alphaResult.reason?.message || 'Unknown error'}]`;
       partialFailure = true;
     }
 
@@ -553,7 +560,7 @@ export class MasterHandler {
       betaValue = betaResult.value;
     } else {
       this.log('subtask_beta_failed', { error: betaResult.reason?.message });
-      betaValue = `[Agent Beta failed: ${betaResult.reason?.message || 'Unknown error'}]`;
+      betaValue = `[${this.agentNames.beta} failed: ${betaResult.reason?.message || 'Unknown error'}]`;
       partialFailure = true;
     }
 
@@ -585,8 +592,8 @@ Task: "${task}"
 
 You MUST provide your response in this EXACT format (do not deviate):
 EXPLANATION: [Brief explanation of how you're breaking down the task]
-SUBTASK 1: [First subtask for Agent Alpha - a specific, distinct portion of the work]
-SUBTASK 2: [Second subtask for Agent Beta - a different, complementary portion of the work]`;
+SUBTASK 1: [First subtask for ${this.agentNames.alpha} - a specific, distinct portion of the work]
+SUBTASK 2: [Second subtask for ${this.agentNames.beta} - a different, complementary portion of the work]`;
 
     const response = await chat([
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
@@ -660,9 +667,14 @@ SUBTASK 2: [Second subtask for Agent Beta - a different, complementary portion o
       });
     }
 
+    // Streaming callback: forward each token to the dashboard in real time
+    const onChunk = onMessage
+      ? (chunk) => onMessage({ type: 'streaming', agent: 'alpha', chunk })
+      : null;
+
     // Process with retry
     const result = await withRetry(
-      () => this.subAgentAlpha.processSubtask(subtask, () => {}, onCommunication),
+      () => this.subAgentAlpha.processSubtask(subtask, onChunk, onCommunication),
       'subtask_alpha',
       (retryInfo) => {
         this.log('retry', { ...retryInfo, agent: 'alpha' });
@@ -679,6 +691,11 @@ SUBTASK 2: [Second subtask for Agent Beta - a different, complementary portion o
 
     if (!result.success) {
       throw new Error(result.error);
+    }
+
+    // Signal that streaming has ended for this agent
+    if (onMessage) {
+      onMessage({ type: 'stream-end', agent: 'alpha' });
     }
 
     console.log(`\n===== AGENT ALPHA RESULT (${result.result?.length || 0} chars) =====`);
@@ -708,9 +725,14 @@ SUBTASK 2: [Second subtask for Agent Beta - a different, complementary portion o
       });
     }
 
+    // Streaming callback: forward each token to the dashboard in real time
+    const onChunk = onMessage
+      ? (chunk) => onMessage({ type: 'streaming', agent: 'beta', chunk })
+      : null;
+
     // Process with retry
     const result = await withRetry(
-      () => this.subAgentBeta.processSubtask(subtask, () => {}, onCommunication),
+      () => this.subAgentBeta.processSubtask(subtask, onChunk, onCommunication),
       'subtask_beta',
       (retryInfo) => {
         this.log('retry', { ...retryInfo, agent: 'beta' });
@@ -727,6 +749,11 @@ SUBTASK 2: [Second subtask for Agent Beta - a different, complementary portion o
 
     if (!result.success) {
       throw new Error(result.error);
+    }
+
+    // Signal that streaming has ended for this agent
+    if (onMessage) {
+      onMessage({ type: 'stream-end', agent: 'beta' });
     }
 
     console.log(`\n===== AGENT BETA RESULT (${result.result?.length || 0} chars) =====`);
@@ -769,7 +796,7 @@ SUBTASK 2: [Second subtask for Agent Beta - a different, complementary portion o
       ? `\n\nNote: The sub-agents completed ${totalRounds} round(s) of work (initial + ${totalRounds - 1} follow-up(s)). Incorporate findings from ALL rounds.`
       : '';
 
-    const synthesisPrompt = `You are the Master Handler synthesizing results from your two Agents.
+    const synthesisPrompt = `You are the Master Handler synthesizing results from your two Agents: ${this.agentNames.alpha} and ${this.agentNames.beta}.
 
 The user originally requested: "${originalTask}"
 
@@ -778,7 +805,8 @@ ${alphaBlock}
 ${betaBlock}
 ${roundsNote}
 
-IMPORTANT: The outputs above ARE the completed results from the agents. Do NOT say you haven't received them. Synthesize these results into a coherent, complete final response for the user. Combine the findings from all rounds, address any overlaps or conflicts, and present a unified solution.`;
+IMPORTANT: Always refer to the agents by their names: "${this.agentNames.alpha}" and "${this.agentNames.beta}". Do NOT call them "Alpha" or "Beta".
+The outputs above ARE the completed results from the agents. Do NOT say you haven't received them. Synthesize these results into a coherent, complete final response for the user. Combine the findings from all rounds, address any overlaps or conflicts, and present a unified solution.`;
 
     // Use a CLEAN messages array — do NOT pass conversationHistory here.
     const response = await chat([
@@ -797,29 +825,34 @@ IMPORTANT: The outputs above ARE the completed results from the agents. Do NOT s
    * @returns {Promise<{satisfied: boolean, reasoning: string, followUps: {alpha: string|null, beta: string|null}}>}
    */
   async evaluateResults(originalTask, alphaResult, betaResult) {
+    const alphaName = this.agentNames.alpha;
+    const betaName = this.agentNames.beta;
+
     const evaluationPrompt = `You are the Master Handler evaluating your Agents' work.
 
 Original user task: "${originalTask}"
 
-Agent Alpha's latest output:
---- ALPHA ---
+${alphaName}'s latest output:
+--- ${alphaName.toUpperCase()} ---
 ${alphaResult || '[No output]'}
---- END ALPHA ---
+--- END ${alphaName.toUpperCase()} ---
 
-Agent Beta's latest output:
---- BETA ---
+${betaName}'s latest output:
+--- ${betaName.toUpperCase()} ---
 ${betaResult || '[No output]'}
---- END BETA ---
+--- END ${betaName.toUpperCase()} ---
 
 Critically evaluate whether these results TOGETHER adequately address the user's task.
 Consider: completeness, depth, accuracy, relevance, and whether anything important is missing.
 
+IMPORTANT: Always refer to the agents by their names: "${alphaName}" and "${betaName}". Do NOT call them "Alpha" or "Beta".
+
 You MUST respond in this EXACT format:
 
 VERDICT: SATISFIED or NEEDS_FOLLOW_UP
-REASONING: [Brief explanation of your evaluation]
-FOLLOW_UP_ALPHA: [Follow-up task for Alpha, or NONE if Alpha's work is adequate]
-FOLLOW_UP_BETA: [Follow-up task for Beta, or NONE if Beta's work is adequate]
+REASONING: [Brief explanation of your evaluation — use agent names ${alphaName} and ${betaName}]
+FOLLOW_UP_ALPHA: [Follow-up task for ${alphaName}, or NONE if their work is adequate]
+FOLLOW_UP_BETA: [Follow-up task for ${betaName}, or NONE if their work is adequate]
 
 Only request follow-ups for genuinely important gaps. Minor stylistic issues do not warrant follow-ups.`;
 
@@ -906,8 +939,13 @@ Only request follow-ups for genuinely important gaps. Minor stylistic issues do 
       if (onMessage) onMessage(commEvent);
     };
 
+    // Streaming callback: forward each token to the dashboard in real time
+    const onChunk = onMessage
+      ? (chunk) => onMessage({ type: 'streaming', agent, chunk })
+      : null;
+
     const result = await withRetry(
-      () => subAgent.processSubtask(followUpTask, () => {}, onCommunication),
+      () => subAgent.processSubtask(followUpTask, onChunk, onCommunication),
       `follow_up_${agent}`,
       (retryInfo) => {
         this.log('retry', { ...retryInfo, agent });
@@ -924,6 +962,11 @@ Only request follow-ups for genuinely important gaps. Minor stylistic issues do 
 
     if (!result.success) {
       throw new Error(result.error);
+    }
+
+    // Signal that streaming has ended for this agent's follow-up
+    if (onMessage) {
+      onMessage({ type: 'stream-end', agent });
     }
 
     console.log(`\n===== AGENT ${agentLabel} FOLLOW-UP RESULT (${result.result?.length || 0} chars) =====`);

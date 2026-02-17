@@ -56,6 +56,20 @@
     .md-prose th { background: #f9fafb; font-weight: 600; }
     .md-prose strong { font-weight: 600; }
     .md-prose a { color: #7c3aed; text-decoration: underline; }
+    /* Streaming cursor animation */
+    .streaming-cursor {
+      display: inline-block;
+      width: 2px;
+      height: 1em;
+      background: #6b7280;
+      margin-left: 2px;
+      vertical-align: text-bottom;
+      animation: cursorBlink 0.8s ease-in-out infinite;
+    }
+    @keyframes cursorBlink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
   </style>
 </head>
 <body class="h-screen flex flex-col overflow-hidden bg-gray-50 text-gray-900">
