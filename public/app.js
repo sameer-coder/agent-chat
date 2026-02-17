@@ -35,6 +35,9 @@ class AgentDashboard {
     // Store latest agent results for modal viewing
     this.agentResults = { alpha: null, beta: null };
     
+    // Dynamic agent names (updated from server each task)
+    this.agentNames = { alpha: 'Agent Alpha', beta: 'Agent Beta' };
+    
     this.isConnected = false;
     this.isProcessing = false;
     this.apiConfigured = false;
@@ -370,6 +373,7 @@ class AgentDashboard {
       if (hostname.includes('deepseek.com')) return 'DeepSeek';
       if (hostname.includes('nvidia.com')) return 'NVIDIA';
       if (hostname.includes('strongwall.ai')) return 'Strongwall';
+      if (hostname.includes('groq.com')) return 'Groq';
       if (hostname.includes('localhost') || hostname.includes('127.0.0.1')) {
         if (baseUrl.includes('11434')) return 'Ollama';
         if (baseUrl.includes('1234')) return 'LM Studio';
@@ -388,15 +392,16 @@ class AgentDashboard {
       case 'connected':
         this.updateApiStatus(data.apiConfigured, data.config);
         break;
+      case 'agent-names':
+        this.agentNames = data.names;
+        this.updateSidebarAgentNames();
+        break;
       case 'status':
         this.addStatusMessage(data.agent, data.message);
         this.updateAgentStatus(data.agent, data.message);
         break;
       case 'task-breakdown':
         this.addTaskBreakdown(data.message, data.subtasks);
-        break;
-      case 'task-assignment':
-        this.addTaskAssignment(data.target, data.message);
         break;
       case 'streaming':
         this.handleStreamingMessage(data.agent, data.chunk);
@@ -493,8 +498,8 @@ class AgentDashboard {
     const normalized = String(agentId || '').toLowerCase();
     if (normalized === 'user') return 'User';
     if (normalized === 'master-handler' || normalized === 'master') return 'Master Handler';
-    if (normalized === 'alpha' || normalized === 'sub-agent-alpha') return 'Sub-Agent Alpha';
-    if (normalized === 'beta' || normalized === 'sub-agent-beta') return 'Sub-Agent Beta';
+    if (normalized === 'alpha' || normalized === 'sub-agent-alpha') return this.agentNames.alpha;
+    if (normalized === 'beta' || normalized === 'sub-agent-beta') return this.agentNames.beta;
     if (normalized === 'system') return 'System';
     return agentId || 'Unknown';
   }
@@ -538,8 +543,8 @@ class AgentDashboard {
   showAgentResultModal(agent) {
     const result = this.agentResults[agent];
     if (!result) return;
-    const names = { alpha: 'Sub-Agent Alpha', beta: 'Sub-Agent Beta' };
-    this.agentResultModalTitle.textContent = `${names[agent] || agent} — Result`;
+    const name = this.agentNames[agent] || agent;
+    this.agentResultModalTitle.textContent = `${name} — Result`;
     this.agentResultModalBody.textContent = result;
     this.agentResultModal.classList.remove('hidden');
     this.agentResultModal.classList.add('flex');
@@ -574,8 +579,8 @@ class AgentDashboard {
   addStatusMessage(agent, message) {
     const agentNames = {
       'master-handler': 'Master Handler',
-      'alpha': 'Sub-Agent Alpha',
-      'beta': 'Sub-Agent Beta',
+      'alpha': this.agentNames.alpha,
+      'beta': this.agentNames.beta,
       'system': 'System'
     };
     
@@ -620,11 +625,11 @@ class AgentDashboard {
       <p class="text-gray-600 text-sm mb-3">${this.escapeHtml(explanation)}</p>
       <div class="space-y-2">
         <div class="flex items-start gap-2 p-2 rounded bg-cyan-50 border border-cyan-200">
-          <span class="text-cyan-600 font-medium text-sm">Alpha:</span>
+          <span class="text-cyan-600 font-medium text-sm">${this.escapeHtml(this.agentNames.alpha)}:</span>
           <span class="text-gray-700 text-sm">${this.escapeHtml(subtasks[0])}</span>
         </div>
         <div class="flex items-start gap-2 p-2 rounded bg-emerald-50 border border-emerald-200">
-          <span class="text-emerald-600 font-medium text-sm">Beta:</span>
+          <span class="text-emerald-600 font-medium text-sm">${this.escapeHtml(this.agentNames.beta)}:</span>
           <span class="text-gray-700 text-sm">${this.escapeHtml(subtasks[1])}</span>
         </div>
       </div>
@@ -633,39 +638,18 @@ class AgentDashboard {
     this.scrollToBottom();
   }
 
-  addTaskAssignment(agent, message) {
-    const agentNames = {
-      'alpha': 'Sub-Agent Alpha',
-      'beta': 'Sub-Agent Beta'
-    };
-    
-    const agentColors = {
-      'alpha': 'border-cyan-200 bg-cyan-50',
-      'beta': 'border-emerald-200 bg-emerald-50'
-    };
-    
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message-enter p-3 rounded-lg border ${agentColors[agent]}`;
-    messageDiv.innerHTML = `
-      <div class="flex items-center gap-2 mb-1">
-        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
-        </svg>
-        <span class="text-sm text-gray-500">Assigned to ${agentNames[agent]}</span>
-      </div>
-      <p class="text-gray-700 text-sm">${this.makeCollapsible(message, 3)}</p>
-    `;
-    this.messagesContainer.appendChild(messageDiv);
-    this.scrollToBottom();
+  /**
+   * Update sidebar agent cards with dynamic names
+   */
+  updateSidebarAgentNames() {
+    const alphaNameEl = document.getElementById('alpha-name');
+    const betaNameEl = document.getElementById('beta-name');
+    if (alphaNameEl) alphaNameEl.textContent = this.agentNames.alpha;
+    if (betaNameEl) betaNameEl.textContent = this.agentNames.beta;
   }
 
   handleStreamingMessage(agent, chunk) {
     let messageEl = document.getElementById(`streaming-${agent}`);
-    
-    const agentNames = {
-      'alpha': 'Sub-Agent Alpha',
-      'beta': 'Sub-Agent Beta'
-    };
     
     const agentColors = {
       'alpha': 'border-cyan-200',
@@ -683,7 +667,7 @@ class AgentDashboard {
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
               </svg>
             </div>
-            <span class="font-medium text-sm">${agentNames[agent]}</span>
+            <span class="font-medium text-sm">${this.agentNames[agent] || agent}</span>
             <span class="text-xs text-gray-400 animate-pulse">Thinking...</span>
           </div>
           <p id="streaming-${agent}" class="text-gray-700 text-sm whitespace-pre-wrap"></p>
@@ -698,23 +682,46 @@ class AgentDashboard {
   }
 
   addFinalResponse(message) {
+    // Remove any lingering retry messages before showing the final result
+    document.querySelectorAll('.retry-message').forEach(el => el.remove());
+
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message-enter bg-gradient-to-r from-purple-50 to-white rounded-lg p-4 border border-purple-200 shadow-sm';
+
+    // Render markdown
+    const rendered = this.renderMarkdown(message);
+    const collapseId = `final-${Date.now()}`;
+
     messageDiv.innerHTML = `
-      <div class="flex items-center gap-2 mb-3">
-        <div class="w-8 h-8 rounded-full bg-purple-500 flex items-center justify-center">
-          <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-          </svg>
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-full bg-purple-500 flex items-center justify-center">
+            <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+          </div>
+          <span class="font-semibold">Final Synthesis</span>
         </div>
-        <span class="font-semibold">Final Synthesis</span>
       </div>
-      <div class="prose prose-sm max-w-none">
-        <div class="text-gray-800">${this.makeCollapsible(message, 8)}</div>
-      </div>
+      <div class="md-prose text-gray-800 text-sm">${rendered}</div>
     `;
     this.messagesContainer.appendChild(messageDiv);
     this.scrollToBottom();
+  }
+
+  /**
+   * Render markdown text to HTML using marked.js
+   */
+  renderMarkdown(text) {
+    if (typeof marked !== 'undefined') {
+      try {
+        return marked.parse(text);
+      } catch (e) {
+        // Fallback to escaped text
+        return `<div class="whitespace-pre-wrap">${this.escapeHtml(text)}</div>`;
+      }
+    }
+    return `<div class="whitespace-pre-wrap">${this.escapeHtml(text)}</div>`;
   }
 
   addErrorMessage(message) {
@@ -738,10 +745,8 @@ class AgentDashboard {
    * Add an inter-agent communication message
    */
   addAgentCommunicationMessage(from, to, message) {
-    const fromName = from === 'sub-agent-alpha' ? 'Alpha' : 
-                     from === 'sub-agent-beta' ? 'Beta' : from;
-    const toName = to === 'alpha' ? 'Alpha' : 
-                   to === 'beta' ? 'Beta' : to;
+    const fromName = this.getAgentLabel(from);
+    const toName = this.getAgentLabel(to);
     
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message-enter bg-indigo-50 border border-indigo-200 rounded-lg p-3';
@@ -809,16 +814,12 @@ class AgentDashboard {
    * Add a collapsible sub-agent result message
    */
   addAgentResultMessage(agent, message, round = 1) {
-    const agentNames = {
-      'alpha': 'Sub-Agent Alpha',
-      'beta': 'Sub-Agent Beta'
-    };
     const agentColors = {
       'alpha': { border: 'border-cyan-300', bg: 'bg-cyan-50', badge: 'bg-cyan-500', text: 'text-cyan-700', headerBg: 'bg-cyan-100' },
       'beta': { border: 'border-emerald-300', bg: 'bg-emerald-50', badge: 'bg-emerald-500', text: 'text-emerald-700', headerBg: 'bg-emerald-100' }
     };
     const colors = agentColors[agent] || agentColors['alpha'];
-    const name = agentNames[agent] || agent;
+    const name = this.agentNames[agent] || agent;
     const roundLabel = round > 1 ? ` (Follow-up Round ${round - 1})` : '';
     const collapseId = `result-${agent}-${Date.now()}`;
 
@@ -900,16 +901,12 @@ class AgentDashboard {
    * Add a follow-up task assignment message
    */
   addFollowUpAssignment(agent, task, round) {
-    const agentNames = {
-      'alpha': 'Sub-Agent Alpha',
-      'beta': 'Sub-Agent Beta'
-    };
     const agentColors = {
       'alpha': 'border-cyan-300 bg-cyan-50',
       'beta': 'border-emerald-300 bg-emerald-50'
     };
     const dotColor = agent === 'alpha' ? 'bg-cyan-500' : 'bg-emerald-500';
-    const name = agentNames[agent] || agent;
+    const name = this.agentNames[agent] || agent;
 
     const messageDiv = document.createElement('div');
     messageDiv.className = `message-enter p-3 rounded-lg border ${agentColors[agent]} shadow-sm`;
@@ -933,20 +930,20 @@ class AgentDashboard {
    * Add a retry message
    */
   addRetryMessage(agent, message, attempt, maxRetries) {
-    const agentNames = {
+    const agentDisplayNames = {
       'master-handler': 'Master Handler',
-      'alpha': 'Sub-Agent Alpha',
-      'beta': 'Sub-Agent Beta'
+      'alpha': this.agentNames.alpha,
+      'beta': this.agentNames.beta
     };
     
     const messageDiv = document.createElement('div');
-    messageDiv.className = 'message-enter bg-amber-50 border border-amber-200 rounded-lg p-3';
+    messageDiv.className = 'message-enter retry-message bg-amber-50 border border-amber-200 rounded-lg p-3';
     messageDiv.innerHTML = `
       <div class="flex items-center gap-2 mb-1">
         <svg class="w-4 h-4 text-amber-500 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
         </svg>
-        <span class="text-sm font-medium text-amber-700">${agentNames[agent] || agent}</span>
+        <span class="text-sm font-medium text-amber-700">${agentDisplayNames[agent] || agent}</span>
         <span class="text-xs text-amber-600">Retry ${attempt}/${maxRetries}</span>
       </div>
       <p class="text-gray-600 text-sm">${this.escapeHtml(message)}</p>
@@ -959,10 +956,10 @@ class AgentDashboard {
    * Add a warning message
    */
   addWarningMessage(agent, message) {
-    const agentNames = {
+    const agentDisplayNames = {
       'master-handler': 'Master Handler',
-      'alpha': 'Sub-Agent Alpha',
-      'beta': 'Sub-Agent Beta'
+      'alpha': this.agentNames.alpha,
+      'beta': this.agentNames.beta
     };
     
     const messageDiv = document.createElement('div');
@@ -972,7 +969,7 @@ class AgentDashboard {
         <svg class="w-4 h-4 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
         </svg>
-        <span class="text-sm font-medium text-yellow-700">Warning from ${agentNames[agent] || agent}</span>
+        <span class="text-sm font-medium text-yellow-700">Warning from ${agentDisplayNames[agent] || agent}</span>
       </div>
       <p class="text-gray-600 text-sm">${this.escapeHtml(message)}</p>
     `;
@@ -1097,6 +1094,7 @@ class AgentDashboard {
       if (url.hostname.includes('deepseek')) return 'deepseek';
       if (url.hostname.includes('nvidia')) return 'nvidia';
       if (url.hostname.includes('strongwall')) return 'strongwall';
+      if (url.hostname.includes('groq')) return 'groq';
       if (url.hostname.includes('ollama')) return 'ollama';
       if (url.hostname.includes('lmstudio')) return 'lmstudio';
       if (url.hostname.includes('openai')) return 'openai';

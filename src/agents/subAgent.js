@@ -7,17 +7,17 @@ import { chat, chatStream } from './openaiService.js';
 const MAX_QUESTIONS_PER_TASK = 5;
 
 // System prompt for Sub-Agents
-const SUB_AGENT_SYSTEM_PROMPT = `You are a specialized Sub-Agent working on a task assigned by a Master Handler.
+const SUB_AGENT_SYSTEM_PROMPT = `You are a specialized Agent working on a task assigned by a Master Handler.
 
 Your role:
 1. Receive a specific subtask from the Master Handler
 2. Work on completing that subtask to the best of your ability
-3. You can communicate with other Sub-Agents if needed to coordinate or share information
+3. You can communicate with other Agents if needed to coordinate or share information
 4. Report your progress and results back to the Master Handler
 5. Be clear, concise, and focused on your assigned subtask
 
 When communicating:
-- Always identify yourself as "Sub-Agent Alpha" or "Sub-Agent Beta"
+- Always identify yourself by your agent name
 - Share relevant findings that might help other agents
 - Ask the Master Handler or other agents for clarification if needed
 - Stay focused on your assigned portion of the work
@@ -31,7 +31,7 @@ How to decide WHO to ask:
 • Ask "master" when you need clarification about the original user task, overall
   project goals, constraints, priorities, or high-level decisions.
 • Ask "alpha" (if you are Beta) or "beta" (if you are Alpha) when the other
-  sub-agent is working on a related subtask and likely has relevant domain details,
+  agent is working on a related subtask and likely has relevant domain details,
   partial results, or specialized knowledge that complements your own.
 
 To ask a question, output EXACTLY this format on its own line:
@@ -286,7 +286,7 @@ export class SubAgent {
     // Add user message with the subtask
     this.conversationHistory.push({
       role: 'user',
-      content: `You are Sub-Agent ${selfLabel}. Master Handler has assigned you this subtask: "${subtask}".\n\nPlease complete this subtask and report your findings/results.\nIf you need information you don't have, ask a question using:\nASK_QUESTION_TO: <master|${otherLabel}> QUESTION: <your question>\nOtherwise, produce your final answer directly.`
+      content: `You are Agent ${selfLabel}. Master Handler has assigned you this subtask: "${subtask}".\n\nPlease complete this subtask and report your findings/results.\nIf you need information you don't have, ask a question using:\nASK_QUESTION_TO: <master|${otherLabel}> QUESTION: <your question>\nOtherwise, produce your final answer directly.`
     });
 
     try {
@@ -327,8 +327,8 @@ export class SubAgent {
 
           if (result.success) {
             const answererLabel = result.resolvedTarget === 'master-handler' ? 'Master Handler'
-              : result.resolvedTarget === 'sub-agent-alpha' ? 'Sub-Agent Alpha'
-              : result.resolvedTarget === 'sub-agent-beta' ? 'Sub-Agent Beta'
+              : result.resolvedTarget === 'sub-agent-alpha' ? 'Agent Alpha'
+              : result.resolvedTarget === 'sub-agent-beta' ? 'Agent Beta'
               : result.resolvedTarget;
 
             answerParts.push(`Answer from ${answererLabel}: ${result.answer}`);
@@ -407,7 +407,7 @@ export class SubAgent {
 
       return response;
     } catch (error) {
-      throw new Error(`Sub-Agent ${this.name} error: ${error.message}`);
+      throw new Error(`Agent ${this.name} error: ${error.message}`);
     }
   }
 
@@ -487,7 +487,7 @@ export class SubAgent {
     
     this.conversationHistory.push({
       role: 'user',
-      content: `Message from Sub-Agent ${fromName}: ${message}\n\nPlease respond appropriately. Keep your response focused and relevant to your current task.`
+      content: `Message from Agent ${fromName}: ${message}\n\nPlease respond appropriately. Keep your response focused and relevant to your current task.`
     });
     
     try {

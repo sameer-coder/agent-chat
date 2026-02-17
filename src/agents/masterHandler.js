@@ -7,11 +7,11 @@ const MASTER_HANDLER_SYSTEM_PROMPT = `You are the Master Handler - the central o
 Your role:
 1. Analyze incoming tasks from the user
 2. Break down complex tasks into smaller, manageable subtasks
-3. Assign appropriate subtasks to your Sub-Agents (Alpha and Beta)
-4. Coordinate communication between Sub-Agents when needed
-5. Monitor progress and results from Sub-Agents
-6. Synthesize the outputs from both Sub-Agents into a coherent final response
-7. Answer questions from Sub-Agents when they need clarification about the original
+3. Assign appropriate subtasks to your two specialized Agents (Alpha and Beta)
+4. Coordinate communication between Agents when needed
+5. Monitor progress and results from Agents
+6. Synthesize the outputs from both Agents into a coherent final response
+7. Answer questions from Agents when they need clarification about the original
    task, overall goals, constraints, or high-level decisions
 
 Task Analysis Guidelines:
@@ -25,17 +25,17 @@ Communication Style:
 - Acknowledge when agents report back
 - Keep the user informed of progress
 - Provide context when assigning subtasks
-- When a Sub-Agent asks you a question, answer concisely and helpfully
+- When an Agent asks you a question, answer concisely and helpfully
   based on the original user task and any context you have
 
 Quality Evaluation:
-- After receiving results from Sub-Agents, critically evaluate their quality
+- After receiving results from Agents, critically evaluate their quality
 - Check for completeness, accuracy, depth, and relevance to the original task
 - If the results are lacking, assign targeted follow-up tasks to address the gaps
 - You may request up to 2 rounds of follow-up work before final synthesis
 
 Final Synthesis:
-- Combine results from ALL rounds (initial + any follow-ups) from both Sub-Agents
+- Combine results from ALL rounds (initial + any follow-ups) from both Agents
 - Ensure the final response is coherent and complete
 - Address any conflicts or gaps in the results
 - Present a unified solution to the user
@@ -122,12 +122,35 @@ export async function withRetry(fn, operationName, onRetry = null) {
 }
 
 /**
+ * Pool of creative agent name prefixes. Two are picked at random per session.
+ */
+const AGENT_NAME_POOL = [
+  'Nova', 'Cipher', 'Atlas', 'Nexus', 'Prism', 'Echo', 'Sage', 'Pulse',
+  'Zenith', 'Flux', 'Astra', 'Vortex', 'Helix', 'Lyra', 'Quasar', 'Ember',
+  'Drift', 'Onyx', 'Apex', 'Halo', 'Orion', 'Blaze', 'Nimbus', 'Pixel',
+  'Rune', 'Spark', 'Tidal', 'Zephyr', 'Cobalt', 'Iris'
+];
+
+/**
+ * Pick two unique random names from the pool and return them as "<Name> Agent".
+ * @returns {{ alpha: string, beta: string }}
+ */
+function generateAgentNames() {
+  const shuffled = [...AGENT_NAME_POOL].sort(() => Math.random() - 0.5);
+  return {
+    alpha: `${shuffled[0]} Agent`,
+    beta: `${shuffled[1]} Agent`
+  };
+}
+
+/**
  * Master Handler - orchestrates the multi-agent system
  */
 export class MasterHandler {
   constructor() {
     this.name = 'Master Handler';
     this.agentId = 'master-handler';
+    this.agentNames = generateAgentNames();
     this.subAgentAlpha = createSubAgentAlpha();
     this.subAgentBeta = createSubAgentBeta();
     this.conversationHistory = [
@@ -154,8 +177,8 @@ export class MasterHandler {
    * @returns {Promise<string>} Answer to the question
    */
   async receiveQuestion(fromAgentId, question) {
-    const fromName = fromAgentId === 'sub-agent-alpha' ? 'Sub-Agent Alpha'
-      : fromAgentId === 'sub-agent-beta' ? 'Sub-Agent Beta'
+    const fromName = fromAgentId === 'sub-agent-alpha' ? this.agentNames.alpha
+      : fromAgentId === 'sub-agent-beta' ? this.agentNames.beta
       : fromAgentId;
 
     this.log('question_received', { from: fromAgentId, question });
@@ -219,6 +242,14 @@ export class MasterHandler {
       content: `User's task: "${task}"`
     });
 
+    // Send dynamic agent names to the frontend
+    if (onMessage) {
+      onMessage({
+        type: 'agent-names',
+        names: this.agentNames
+      });
+    }
+
     // Step 1: Analyze task and determine how to break it down
     if (onMessage) {
       onMessage({
@@ -271,7 +302,7 @@ export class MasterHandler {
       onMessage({
         type: 'status',
         agent: 'master-handler',
-        message: `Assigning subtasks to Sub-Agents...`
+        message: `Assigning subtasks to ${this.agentNames.alpha} & ${this.agentNames.beta}...`
       });
     }
 
@@ -280,7 +311,7 @@ export class MasterHandler {
       onMessage({
         type: 'status',
         agent: 'master-handler',
-        message: 'Waiting for Sub-Agents to complete...'
+        message: `Waiting for ${this.agentNames.alpha} & ${this.agentNames.beta} to complete...`
       });
     }
 
@@ -322,7 +353,7 @@ export class MasterHandler {
         onMessage({
           type: 'warning',
           agent: 'master-handler',
-          message: 'One or more sub-agents encountered issues. Proceeding with available results.'
+          message: 'One or more agents encountered issues. Proceeding with available results.'
         });
       }
     }
@@ -339,7 +370,7 @@ export class MasterHandler {
         onMessage({
           type: 'status',
           agent: 'master-handler',
-          message: `Evaluating sub-agent results (round ${round})...`
+          message: `Evaluating agent results (round ${round})...`
         });
       }
 
@@ -376,6 +407,8 @@ export class MasterHandler {
       const followUpPromises = [];
 
       if (evaluation.followUps.alpha) {
+        const previousAlphaOutput = allResults.alpha[allResults.alpha.length - 1] || '';
+        const enrichedAlphaTask = `FOLLOW-UP REQUEST FROM MASTER HANDLER\n\nYour previous output was:\n--- YOUR PREVIOUS OUTPUT ---\n${previousAlphaOutput}\n--- END PREVIOUS OUTPUT ---\n\nMaster Handler's evaluation: ${evaluation.reasoning}\n\nFollow-up task: ${evaluation.followUps.alpha}\n\nPlease address the gaps identified above and produce an improved, more complete response. Build on your previous work — do not start from scratch.`;
         this.log('follow_up_assigned', { agent: 'alpha', round, task: evaluation.followUps.alpha });
         if (onMessage) {
           onMessage({
@@ -387,13 +420,15 @@ export class MasterHandler {
           });
         }
         followUpPromises.push(
-          this.processFollowUpTask('alpha', evaluation.followUps.alpha, onMessage)
+          this.processFollowUpTask('alpha', enrichedAlphaTask, onMessage)
             .then(r => ({ agent: 'alpha', result: r }))
             .catch(e => ({ agent: 'alpha', result: `[Follow-up failed: ${e.message}]` }))
         );
       }
 
       if (evaluation.followUps.beta) {
+        const previousBetaOutput = allResults.beta[allResults.beta.length - 1] || '';
+        const enrichedBetaTask = `FOLLOW-UP REQUEST FROM MASTER HANDLER\n\nYour previous output was:\n--- YOUR PREVIOUS OUTPUT ---\n${previousBetaOutput}\n--- END PREVIOUS OUTPUT ---\n\nMaster Handler's evaluation: ${evaluation.reasoning}\n\nFollow-up task: ${evaluation.followUps.beta}\n\nPlease address the gaps identified above and produce an improved, more complete response. Build on your previous work — do not start from scratch.`;
         this.log('follow_up_assigned', { agent: 'beta', round, task: evaluation.followUps.beta });
         if (onMessage) {
           onMessage({
@@ -405,7 +440,7 @@ export class MasterHandler {
           });
         }
         followUpPromises.push(
-          this.processFollowUpTask('beta', evaluation.followUps.beta, onMessage)
+          this.processFollowUpTask('beta', enrichedBetaTask, onMessage)
             .then(r => ({ agent: 'beta', result: r }))
             .catch(e => ({ agent: 'beta', result: `[Follow-up failed: ${e.message}]` }))
         );
@@ -433,7 +468,7 @@ export class MasterHandler {
       onMessage({
         type: 'status',
         agent: 'master-handler',
-        message: 'Synthesizing all results from Sub-Agents...'
+        message: `Synthesizing all results from ${this.agentNames.alpha} & ${this.agentNames.beta}...`
       });
     }
 
@@ -510,7 +545,7 @@ export class MasterHandler {
       alphaValue = alphaResult.value;
     } else {
       this.log('subtask_alpha_failed', { error: alphaResult.reason?.message });
-      alphaValue = `[Sub-Agent Alpha failed: ${alphaResult.reason?.message || 'Unknown error'}]`;
+      alphaValue = `[Agent Alpha failed: ${alphaResult.reason?.message || 'Unknown error'}]`;
       partialFailure = true;
     }
 
@@ -518,14 +553,14 @@ export class MasterHandler {
       betaValue = betaResult.value;
     } else {
       this.log('subtask_beta_failed', { error: betaResult.reason?.message });
-      betaValue = `[Sub-Agent Beta failed: ${betaResult.reason?.message || 'Unknown error'}]`;
+      betaValue = `[Agent Beta failed: ${betaResult.reason?.message || 'Unknown error'}]`;
       partialFailure = true;
     }
 
     // If both failed, throw an error
     if (alphaResult.status === 'rejected' && betaResult.status === 'rejected') {
       throw new Error(
-        `Both sub-agents failed. Alpha: ${alphaResult.reason?.message}. Beta: ${betaResult.reason?.message}`
+        `Both agents failed. Alpha: ${alphaResult.reason?.message}. Beta: ${betaResult.reason?.message}`
       );
     }
 
@@ -550,8 +585,8 @@ Task: "${task}"
 
 You MUST provide your response in this EXACT format (do not deviate):
 EXPLANATION: [Brief explanation of how you're breaking down the task]
-SUBTASK 1: [First subtask for Sub-Agent Alpha - a specific, distinct portion of the work]
-SUBTASK 2: [Second subtask for Sub-Agent Beta - a different, complementary portion of the work]`;
+SUBTASK 1: [First subtask for Agent Alpha - a specific, distinct portion of the work]
+SUBTASK 2: [Second subtask for Agent Beta - a different, complementary portion of the work]`;
 
     const response = await chat([
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
@@ -619,15 +654,6 @@ SUBTASK 2: [Second subtask for Sub-Agent Beta - a different, complementary porti
   async processSubTaskAlpha(subtask, onMessage, onCommunication = null) {
     if (onMessage) {
       onMessage({
-        type: 'task-assignment',
-        agent: 'master-handler',
-        target: 'alpha',
-        message: `Assigning to Sub-Agent Alpha: "${subtask}"`
-      });
-    }
-
-    if (onMessage) {
-      onMessage({
         type: 'status',
         agent: 'alpha',
         message: 'Processing subtask...'
@@ -655,7 +681,7 @@ SUBTASK 2: [Second subtask for Sub-Agent Beta - a different, complementary porti
       throw new Error(result.error);
     }
 
-    console.log(`\n===== SUB-AGENT ALPHA RESULT (${result.result?.length || 0} chars) =====`);
+    console.log(`\n===== AGENT ALPHA RESULT (${result.result?.length || 0} chars) =====`);
     console.log(result.result?.substring(0, 300) + (result.result?.length > 300 ? '...' : ''));
     console.log('===== END ALPHA RESULT =====\n');
 
@@ -674,15 +700,6 @@ SUBTASK 2: [Second subtask for Sub-Agent Beta - a different, complementary porti
    * Process subtask for Beta agent with retry logic
    */
   async processSubTaskBeta(subtask, onMessage, onCommunication = null) {
-    if (onMessage) {
-      onMessage({
-        type: 'task-assignment',
-        agent: 'master-handler',
-        target: 'beta',
-        message: `Assigning to Sub-Agent Beta: "${subtask}"`
-      });
-    }
-
     if (onMessage) {
       onMessage({
         type: 'status',
@@ -712,7 +729,7 @@ SUBTASK 2: [Second subtask for Sub-Agent Beta - a different, complementary porti
       throw new Error(result.error);
     }
 
-    console.log(`\n===== SUB-AGENT BETA RESULT (${result.result?.length || 0} chars) =====`);
+    console.log(`\n===== AGENT BETA RESULT (${result.result?.length || 0} chars) =====`);
     console.log(result.result?.substring(0, 300) + (result.result?.length > 300 ? '...' : ''));
     console.log('===== END BETA RESULT =====\n');
 
@@ -745,14 +762,14 @@ SUBTASK 2: [Second subtask for Sub-Agent Beta - a different, complementary porti
       }).join('\n\n');
     };
 
-    const alphaBlock = formatAgentResults('Sub-Agent Alpha', allResults.alpha);
-    const betaBlock = formatAgentResults('Sub-Agent Beta', allResults.beta);
+    const alphaBlock = formatAgentResults(this.agentNames.alpha, allResults.alpha);
+    const betaBlock = formatAgentResults(this.agentNames.beta, allResults.beta);
     const totalRounds = Math.max(allResults.alpha.length, allResults.beta.length);
     const roundsNote = totalRounds > 1
       ? `\n\nNote: The sub-agents completed ${totalRounds} round(s) of work (initial + ${totalRounds - 1} follow-up(s)). Incorporate findings from ALL rounds.`
       : '';
 
-    const synthesisPrompt = `You are the Master Handler synthesizing results from your two Sub-Agents.
+    const synthesisPrompt = `You are the Master Handler synthesizing results from your two Agents.
 
 The user originally requested: "${originalTask}"
 
@@ -761,7 +778,7 @@ ${alphaBlock}
 ${betaBlock}
 ${roundsNote}
 
-IMPORTANT: The outputs above ARE the completed results from the sub-agents. Do NOT say you haven't received them. Synthesize these results into a coherent, complete final response for the user. Combine the findings from all rounds, address any overlaps or conflicts, and present a unified solution.`;
+IMPORTANT: The outputs above ARE the completed results from the agents. Do NOT say you haven't received them. Synthesize these results into a coherent, complete final response for the user. Combine the findings from all rounds, address any overlaps or conflicts, and present a unified solution.`;
 
     // Use a CLEAN messages array — do NOT pass conversationHistory here.
     const response = await chat([
@@ -780,16 +797,16 @@ IMPORTANT: The outputs above ARE the completed results from the sub-agents. Do N
    * @returns {Promise<{satisfied: boolean, reasoning: string, followUps: {alpha: string|null, beta: string|null}}>}
    */
   async evaluateResults(originalTask, alphaResult, betaResult) {
-    const evaluationPrompt = `You are the Master Handler evaluating your Sub-Agents' work.
+    const evaluationPrompt = `You are the Master Handler evaluating your Agents' work.
 
 Original user task: "${originalTask}"
 
-Sub-Agent Alpha's latest output:
+Agent Alpha's latest output:
 --- ALPHA ---
 ${alphaResult || '[No output]'}
 --- END ALPHA ---
 
-Sub-Agent Beta's latest output:
+Agent Beta's latest output:
 --- BETA ---
 ${betaResult || '[No output]'}
 --- END BETA ---
@@ -909,7 +926,7 @@ Only request follow-ups for genuinely important gaps. Minor stylistic issues do 
       throw new Error(result.error);
     }
 
-    console.log(`\n===== SUB-AGENT ${agentLabel} FOLLOW-UP RESULT (${result.result?.length || 0} chars) =====`);
+    console.log(`\n===== AGENT ${agentLabel} FOLLOW-UP RESULT (${result.result?.length || 0} chars) =====`);
     console.log(result.result?.substring(0, 300) + (result.result?.length > 300 ? '...' : ''));
     console.log(`===== END ${agentLabel} FOLLOW-UP =====\n`);
 
