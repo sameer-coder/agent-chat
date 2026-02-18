@@ -21,6 +21,9 @@ ENV/
 .env.local
 .env.*.local
 
+# Persisted API config (contains API keys)
+data/config.json
+
 # Build outputs
 dist/
 build/

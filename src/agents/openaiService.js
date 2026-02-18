@@ -31,6 +31,7 @@ async function directHttpsRequest(messages, isStream = false) {
   const path = url.pathname + '/chat/completions';
   
   const isOpenRouter = hostname.includes('openrouter.ai');
+  const isAskCodi = hostname.includes('askcodi.com');
   
   const postData = JSON.stringify({
     model,
@@ -47,6 +48,11 @@ async function directHttpsRequest(messages, isStream = false) {
   };
   
   if (isOpenRouter) {
+    headers['HTTP-Referer'] = 'http://localhost:3000';
+    headers['X-Title'] = 'Multi-Agent Dashboard';
+  }
+  
+  if (isAskCodi) {
     headers['HTTP-Referer'] = 'http://localhost:3000';
     headers['X-Title'] = 'Multi-Agent Dashboard';
   }
@@ -110,6 +116,7 @@ export async function* chatStream(messages) {
   const path = url.pathname + '/chat/completions';
   
   const isOpenRouter = hostname.includes('openrouter.ai');
+  const isAskCodi = hostname.includes('askcodi.com');
   
   const postData = JSON.stringify({
     model,
@@ -126,6 +133,11 @@ export async function* chatStream(messages) {
   };
   
   if (isOpenRouter) {
+    headers['HTTP-Referer'] = 'http://localhost:3000';
+    headers['X-Title'] = 'Multi-Agent Dashboard';
+  }
+  
+  if (isAskCodi) {
     headers['HTTP-Referer'] = 'http://localhost:3000';
     headers['X-Title'] = 'Multi-Agent Dashboard';
   }

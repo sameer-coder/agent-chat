@@ -4,7 +4,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { createMasterHandler } from './src/agents/index.js';
-import { getApiKey, setApiKey, hasApiKey, getConfig, updateConfig } from './src/utils/config.js';
+import { getApiKey, setApiKey, hasApiKey, getConfig, updateConfig, getProviderConfig, getProviderConfigRaw, saveProviderConfig, loadApiKeyForProvider, loadModelForProvider, loadRecentModelsForProvider } from './src/utils/config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -84,6 +84,30 @@ fastify.get('/api/config', async (request, reply) => {
   return config;
 });
 
+// Get full provider config (per-provider keys + models, keys masked)
+fastify.get('/api/provider-config', async (request, reply) => {
+  return getProviderConfig();
+});
+
+// Get raw provider config including real API keys for a specific provider
+fastify.get('/api/provider-config/key', async (request, reply) => {
+  const { baseUrl } = request.query;
+  if (!baseUrl) {
+    return reply.status(400).send({ error: 'baseUrl query parameter is required' });
+  }
+  const apiKey = loadApiKeyForProvider(baseUrl);
+  const model = loadModelForProvider(baseUrl);
+  const recentModels = loadRecentModelsForProvider(baseUrl);
+  return { apiKey: apiKey || '', model: model || '', recentModels };
+});
+
+// Save provider config
+fastify.post('/api/provider-config', async (request, reply) => {
+  const { apiKey, baseUrl, model } = request.body;
+  saveProviderConfig({ apiKey, baseUrl, model });
+  return { success: true };
+});
+
 // Get latest OpenRouter models
 fastify.get('/api/openrouter/models', async (request, reply) => {
   try {
@@ -134,6 +158,61 @@ fastify.get('/api/openrouter/models', async (request, reply) => {
   } catch (error) {
     return reply.status(502).send({
       error: 'Failed to fetch OpenRouter models',
+      details: error.message
+    });
+  }
+});
+
+// Get latest AskCodi models
+fastify.get('/api/askcodi/models', async (request, reply) => {
+  try {
+    const apiKeyHeader = request.headers['x-askcodi-api-key'];
+    const apiKey = typeof apiKeyHeader === 'string' ? apiKeyHeader.trim() : '';
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'http://localhost:3000',
+      'X-Title': 'Multi-Agent Dashboard'
+    };
+
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+
+    const response = await fetch('https://api.askcodi.com/v1/models', {
+      method: 'GET',
+      headers
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return reply.status(response.status).send({
+        error: `Failed to fetch AskCodi models: ${response.status} ${response.statusText}`,
+        details: errorText
+      });
+    }
+
+    const payload = await response.json();
+    const models = Array.isArray(payload?.data) ? payload.data : [];
+
+    const normalizedModels = models
+      .filter((model) => typeof model?.id === 'string')
+      .map((model) => ({
+        id: model.id,
+        name: model.name || model.id,
+        contextLength: model.context_length ?? null,
+        pricing: model.pricing || {},
+        isFree: false
+      }));
+
+    return {
+      success: true,
+      models: normalizedModels,
+      fetchedAt: new Date().toISOString()
+    };
+  } catch (error) {
+    return reply.status(502).send({
+      error: 'Failed to fetch AskCodi models',
       details: error.message
     });
   }

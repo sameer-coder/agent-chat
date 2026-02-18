@@ -1,11 +1,177 @@
 // Configuration management for the multi-agent system
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
-// In-memory storage for API configuration (not persisted)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const CONFIG_DIR = join(__dirname, '..', '..', 'data');
+const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
+
+/**
+ * Default shape for the persisted config file.
+ */
+function defaultFileConfig() {
+  return {
+    activeProvider: 'openai',
+    providers: [
+      {
+        name: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        recentModels: ['gpt-4o-mini']
+      }
+    ]
+  };
+}
+
+/**
+ * Find a provider entry by name in the providers array.
+ */
+function findProvider(data, name) {
+  return (data.providers || []).find(p => p.name === name) || null;
+}
+
+/**
+ * Find a provider entry by baseUrl in the providers array.
+ */
+function findProviderByUrl(data, baseUrl) {
+  const key = deriveProviderKey(baseUrl);
+  return (data.providers || []).find(p => p.name === key) || null;
+}
+
+/**
+ * Get the currently active provider object (or the first one).
+ */
+function getActiveProvider(data) {
+  const active = findProvider(data, data.activeProvider);
+  if (active) return active;
+  return (data.providers || [])[0] || null;
+}
+
+/**
+ * Push a model to the front of a provider's recentModels list (max 3, no dupes).
+ */
+function pushRecentModel(provider, model) {
+  if (!model) return;
+  const list = Array.isArray(provider.recentModels) ? provider.recentModels.slice() : [];
+  const idx = list.indexOf(model);
+  if (idx !== -1) list.splice(idx, 1);
+  list.unshift(model);
+  provider.recentModels = list.slice(0, 3);
+}
+
+/**
+ * Read the JSON config file from disk (or return defaults).
+ * Handles migration from the legacy flat apiKeys/models format.
+ */
+function readConfigFile() {
+  try {
+    if (existsSync(CONFIG_FILE)) {
+      const raw = readFileSync(CONFIG_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+
+      // ── Legacy migration: convert flat apiKeys/models to providers array ──
+      if (parsed.apiKeys && !parsed.providers) {
+        const providers = [];
+        for (const [name, apiKey] of Object.entries(parsed.apiKeys)) {
+          providers.push({
+            name,
+            baseUrl: guessBaseUrl(name),
+            apiKey: apiKey || '',
+            model: (parsed.models && parsed.models[name]) || ''
+          });
+        }
+        const activeKey = deriveProviderKey(parsed.baseUrl || 'https://api.openai.com/v1');
+        return {
+          activeProvider: activeKey,
+          providers: providers.length ? providers : defaultFileConfig().providers
+        };
+      }
+
+      // Already in new format
+      return {
+        activeProvider: parsed.activeProvider || defaultFileConfig().activeProvider,
+        providers: Array.isArray(parsed.providers) && parsed.providers.length
+          ? parsed.providers
+          : defaultFileConfig().providers
+      };
+    }
+  } catch (e) {
+    console.error('Failed to read config file, using defaults:', e.message);
+  }
+  return defaultFileConfig();
+}
+
+/**
+ * Best-effort guess of a base URL from a provider name (used during migration).
+ */
+function guessBaseUrl(providerName) {
+  const map = {
+    openai: 'https://api.openai.com/v1',
+    groq: 'https://api.groq.com/openai/v1',
+    nvidia: 'https://integrate.api.nvidia.com/v1',
+    openrouter: 'https://openrouter.ai/api/v1',
+    deepseek: 'https://api.deepseek.com/v1',
+    askcodi: 'https://api.askcodi.com/v1',
+    ollama: 'http://localhost:11434/v1',
+    lmstudio: 'http://localhost:1234/v1'
+  };
+  return map[providerName] || `https://${providerName}.example.com/v1`;
+}
+
+/**
+ * Write the full config object to disk.
+ */
+function writeConfigFile(data) {
+  try {
+    if (!existsSync(CONFIG_DIR)) {
+      mkdirSync(CONFIG_DIR, { recursive: true });
+    }
+    writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('Failed to write config file:', e.message);
+  }
+}
+
+// ── Active in-memory config (loaded from file on startup) ──
+
+const fileData = readConfigFile();
+
+// Ensure config.json exists on disk from the very first startup so it can be
+// hand-edited or pre-populated before deploying to cloud environments.
+if (!existsSync(CONFIG_FILE)) {
+  writeConfigFile(fileData);
+  console.log(`Created default config file at ${CONFIG_FILE}`);
+}
+
+const activeProvider = getActiveProvider(fileData);
+
 let config = {
-  apiKey: process.env.OPENAI_API_KEY || null,
-  baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-  model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
+  apiKey: process.env.OPENAI_API_KEY || (activeProvider ? activeProvider.apiKey : null),
+  baseUrl: process.env.OPENAI_BASE_URL || (activeProvider ? activeProvider.baseUrl : 'https://api.openai.com/v1'),
+  model: process.env.OPENAI_MODEL || (activeProvider ? activeProvider.model : 'gpt-4o-mini')
 };
+
+/**
+ * Derive a short provider key from a base URL (same logic used by the frontend).
+ */
+function deriveProviderKey(baseUrl) {
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase();
+    if (hostname.includes('openrouter')) return 'openrouter';
+    if (hostname.includes('deepseek')) return 'deepseek';
+    if (hostname.includes('nvidia')) return 'nvidia';
+    if (hostname.includes('strongwall')) return 'strongwall';
+    if (hostname.includes('groq')) return 'groq';
+    if (hostname.includes('askcodi')) return 'askcodi';
+    if (hostname.includes('ollama')) return 'ollama';
+    if (hostname.includes('lmstudio')) return 'lmstudio';
+    if (hostname.includes('openai')) return 'openai';
+    return hostname;
+  } catch (e) { return 'custom'; }
+}
 
 /**
  * Get the current API key
@@ -89,6 +255,134 @@ export function updateConfig(newConfig) {
   if (newConfig.model !== undefined && newConfig.model.trim()) {
     config.model = newConfig.model.trim();
   }
+  // Persist active provider to the JSON file
+  persistCurrentProvider();
+}
+
+/**
+ * Persist the current active config into the providers array on disk.
+ */
+function persistCurrentProvider() {
+  const data = readConfigFile();
+  const providerKey = deriveProviderKey(config.baseUrl);
+  data.activeProvider = providerKey;
+
+  const existing = findProvider(data, providerKey);
+  if (existing) {
+    existing.baseUrl = config.baseUrl;
+    existing.model = config.model;
+    if (config.apiKey) existing.apiKey = config.apiKey;
+    pushRecentModel(existing, config.model);
+  } else {
+    data.providers = data.providers || [];
+    data.providers.push({
+      name: providerKey,
+      baseUrl: config.baseUrl,
+      apiKey: config.apiKey || '',
+      model: config.model,
+      recentModels: config.model ? [config.model] : []
+    });
+  }
+  writeConfigFile(data);
+}
+
+// ─── Provider-config helpers (used by server.js API routes) ───
+
+/**
+ * Get the full persisted provider config (safe for sending to frontend).
+ * API keys are masked.
+ */
+export function getProviderConfig() {
+  const data = readConfigFile();
+  return {
+    activeProvider: data.activeProvider,
+    providers: (data.providers || []).map(p => ({
+      name: p.name,
+      baseUrl: p.baseUrl,
+      apiKey: p.apiKey ? '***configured***' : null,
+      model: p.model,
+      recentModels: Array.isArray(p.recentModels) ? p.recentModels : []
+    }))
+  };
+}
+
+/**
+ * Get the full persisted provider config with real API keys (internal only).
+ */
+export function getProviderConfigRaw() {
+  return readConfigFile();
+}
+
+/**
+ * List all provider names from the config.
+ */
+export function listProviders() {
+  const data = readConfigFile();
+  return (data.providers || []).map(p => p.name);
+}
+
+/**
+ * Save per-provider data from the frontend.
+ * @param {Object} incoming - { baseUrl, model, apiKey }
+ */
+export function saveProviderConfig(incoming) {
+  const data = readConfigFile();
+  const baseUrl = (incoming.baseUrl || 'https://api.openai.com/v1').trim();
+  const model = (incoming.model || 'gpt-4o-mini').trim();
+  const apiKey = (incoming.apiKey || '').trim();
+  const providerKey = deriveProviderKey(baseUrl);
+
+  data.providers = data.providers || [];
+  const existing = findProvider(data, providerKey);
+  if (existing) {
+    existing.baseUrl = baseUrl;
+    existing.model = model;
+    if (apiKey) existing.apiKey = apiKey;
+    pushRecentModel(existing, model);
+  } else {
+    data.providers.push({
+      name: providerKey,
+      baseUrl,
+      apiKey,
+      model,
+      recentModels: model ? [model] : []
+    });
+  }
+  data.activeProvider = providerKey;
+
+  writeConfigFile(data);
+
+  // Also update the active in-memory config
+  config.baseUrl = baseUrl;
+  config.model = model;
+  if (apiKey) config.apiKey = apiKey;
+}
+
+/**
+ * Load API key for a specific provider from the persisted file.
+ */
+export function loadApiKeyForProvider(baseUrl) {
+  const data = readConfigFile();
+  const provider = findProviderByUrl(data, baseUrl);
+  return provider ? provider.apiKey || null : null;
+}
+
+/**
+ * Load model for a specific provider from the persisted file.
+ */
+export function loadModelForProvider(baseUrl) {
+  const data = readConfigFile();
+  const provider = findProviderByUrl(data, baseUrl);
+  return provider ? provider.model || null : null;
+}
+
+/**
+ * Load recent models list for a specific provider from the persisted file.
+ */
+export function loadRecentModelsForProvider(baseUrl) {
+  const data = readConfigFile();
+  const provider = findProviderByUrl(data, baseUrl);
+  return provider && Array.isArray(provider.recentModels) ? provider.recentModels : [];
 }
 
 export default {
@@ -100,5 +394,12 @@ export default {
   setModel,
   hasApiKey,
   getConfig,
-  updateConfig
+  updateConfig,
+  getProviderConfig,
+  getProviderConfigRaw,
+  saveProviderConfig,
+  loadApiKeyForProvider,
+  loadModelForProvider,
+  loadRecentModelsForProvider,
+  listProviders
 };

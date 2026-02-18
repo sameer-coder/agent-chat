@@ -1,50 +1,46 @@
 import { chat, chatStream } from './openaiService.js';
-import { createSubAgentAlpha, createSubAgentBeta, getCommunicationBus } from './subAgent.js';
+import { createSubAgent, getCommunicationBus, MAX_SUB_AGENTS } from './subAgent.js';
 
-// System prompt for Master Handler
 const MASTER_HANDLER_SYSTEM_PROMPT = `You are the Master Handler - the central orchestrator of a multi-agent system.
 
 Your role:
 1. Analyze incoming tasks from the user
-2. Break down complex tasks into smaller, manageable subtasks
-3. Assign appropriate subtasks to your two specialized Agents (Alpha and Beta)
-4. Coordinate communication between Agents when needed
-5. Monitor progress and results from Agents
-6. Synthesize the outputs from both Agents into a coherent final response
-7. Answer questions from Agents when they need clarification about the original
-   task, overall goals, constraints, or high-level decisions
+2. Determine how many specialized Agents are needed (between 1 and 5) based on task complexity
+3. Break down complex tasks into independent subtasks for each Agent
+4. Assign appropriate subtasks to your Agents
+5. Coordinate communication between Agents when needed
+6. Monitor progress and results from Agents
+7. Synthesize the outputs from all Agents into a coherent final response
+8. Answer questions from Agents when they need clarification
 
 Task Analysis Guidelines:
-- Identify if the task can be broken into independent subtasks
-- Determine which subtasks can run in parallel
-- Assign related subtasks to different agents for efficiency
-- Consider each agent's strengths when assigning tasks
+- Simple tasks may only need 1-2 agents
+- Moderately complex tasks may need 2-3 agents
+- Highly complex tasks with many independent components may need 4-5 agents
+- Each subtask should be meaningfully different from the others
+- Consider what can run in parallel
+- Never spawn more agents than there are meaningful subtasks
 
 Communication Style:
 - Be clear and professional when directing agents
 - Acknowledge when agents report back
 - Keep the user informed of progress
-- Provide context when assigning subtasks
 - When an Agent asks you a question, answer concisely and helpfully
-  based on the original user task and any context you have
 
 Quality Evaluation:
-- After receiving results from Agents, critically evaluate their quality
-- Check for completeness, accuracy, depth, and relevance to the original task
-- If the results are lacking, assign targeted follow-up tasks to address the gaps
+- After receiving results, critically evaluate their quality
+- Check for completeness, accuracy, depth, and relevance
+- If results are lacking, assign targeted follow-up tasks
 - You may request up to 2 rounds of follow-up work before final synthesis
 
 Final Synthesis:
-- Combine results from ALL rounds (initial + any follow-ups) from both Agents
+- Combine results from ALL rounds from all Agents
 - Ensure the final response is coherent and complete
 - Address any conflicts or gaps in the results
 - Present a unified solution to the user
 
 Remember: You are the leader - coordinate, don't do all the work yourself!`;
 
-/**
- * Retry configuration
- */
 export const RETRY_CONFIG = {
   maxRetries: 3,
   baseDelayMs: 1000,
@@ -52,145 +48,106 @@ export const RETRY_CONFIG = {
   backoffMultiplier: 2
 };
 
-/**
- * Sleep utility for retry delays
- * @param {number} ms - Milliseconds to sleep
- * @returns {Promise<void>}
- */
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Calculate delay for retry with exponential backoff
- * @param {number} attempt - Current attempt number (0-indexed)
- * @returns {number} Delay in milliseconds
- */
 function calculateRetryDelay(attempt) {
   const delay = RETRY_CONFIG.baseDelayMs * Math.pow(RETRY_CONFIG.backoffMultiplier, attempt);
   return Math.min(delay, RETRY_CONFIG.maxDelayMs);
 }
 
-/**
- * Execute a function with retry logic
- * @param {Function} fn - Async function to execute
- * @param {string} operationName - Name of the operation for logging
- * @param {Function} onRetry - Callback for retry events
- * @returns {Promise<{success: boolean, result?: any, error?: string, attempts: number}>}
- */
 export async function withRetry(fn, operationName, onRetry = null) {
   let lastError = null;
-  
   for (let attempt = 0; attempt < RETRY_CONFIG.maxRetries; attempt++) {
     try {
       const result = await fn();
       return { success: true, result, attempts: attempt + 1 };
     } catch (error) {
       lastError = error;
-      
-      // Don't retry on certain errors
-      if (error.message?.includes('401') || 
-          error.message?.includes('403') ||
-          error.message?.includes('Invalid API key')) {
+      if (error.message?.includes('401') || error.message?.includes('403') || error.message?.includes('Invalid API key')) {
         break;
       }
-      
-      // If this wasn't the last attempt, wait and retry
       if (attempt < RETRY_CONFIG.maxRetries - 1) {
         const delay = calculateRetryDelay(attempt);
-        
         if (onRetry) {
-          onRetry({
-            operation: operationName,
-            attempt: attempt + 1,
-            maxRetries: RETRY_CONFIG.maxRetries,
-            delay,
-            error: error.message
-          });
+          onRetry({ operation: operationName, attempt: attempt + 1, maxRetries: RETRY_CONFIG.maxRetries, delay, error: error.message });
         }
-        
         await sleep(delay);
       }
     }
   }
-  
-  return { 
-    success: false, 
-    error: lastError?.message || 'Unknown error', 
-    attempts: RETRY_CONFIG.maxRetries 
-  };
+  return { success: false, error: lastError?.message || 'Unknown error', attempts: RETRY_CONFIG.maxRetries };
 }
 
-/**
- * Pool of creative agent name prefixes. Two are picked at random per session.
- */
-const AGENT_NAME_POOL = [
-  'Nova', 'Cipher', 'Atlas', 'Nexus', 'Prism', 'Echo', 'Sage', 'Pulse',
-  'Zenith', 'Flux', 'Astra', 'Vortex', 'Helix', 'Lyra', 'Quasar', 'Ember',
-  'Drift', 'Onyx', 'Apex', 'Halo', 'Orion', 'Blaze', 'Nimbus', 'Pixel',
-  'Rune', 'Spark', 'Tidal', 'Zephyr', 'Cobalt', 'Iris'
-];
+const AGENT_NAMES = {
+  0: 'Nova',
+  1: 'Cipher',
+  2: 'Atlas',
+  3: 'Nexus',
+  4: 'Prism'
+};
 
-/**
- * Pick two unique random names from the pool and return them as "<Name> Agent".
- * @returns {{ alpha: string, beta: string }}
- */
-function generateAgentNames() {
-  const shuffled = [...AGENT_NAME_POOL].sort(() => Math.random() - 0.5);
-  return {
-    alpha: `${shuffled[0]} Agent`,
-    beta: `${shuffled[1]} Agent`
-  };
+function getAgentNames(count) {
+  const names = {};
+  for (let i = 0; i < count; i++) {
+    names[i] = AGENT_NAMES[i];
+  }
+  return names;
 }
 
-/**
- * Master Handler - orchestrates the multi-agent system
- */
 export class MasterHandler {
   constructor() {
     this.name = 'Master Handler';
     this.agentId = 'master-handler';
-    this.agentNames = generateAgentNames();
-    this.subAgentAlpha = createSubAgentAlpha();
-    this.subAgentBeta = createSubAgentBeta();
-
-    // Pass dynamic display names to sub-agents so LLM prompts use them
-    this.subAgentAlpha.setDisplayName(this.agentNames.alpha);
-    this.subAgentAlpha.setOtherDisplayName(this.agentNames.beta);
-    this.subAgentBeta.setDisplayName(this.agentNames.beta);
-    this.subAgentBeta.setOtherDisplayName(this.agentNames.alpha);
-
+    this.agentNames = {};
+    this.subAgents = [];
+    this.agentCount = 0;
     this.conversationHistory = [
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT }
     ];
-    this.subTasks = {
-      alpha: null,
-      beta: null
-    };
-    this.subTaskResults = {
-      alpha: null,
-      beta: null
-    };
+    this.subTasks = {};
+    this.subTaskResults = {};
     this.executionLog = [];
 
-    // Register master handler on the communication bus so sub-agents can ask it questions
     getCommunicationBus().registerAgent('master-handler', this);
   }
 
   /**
-   * Receive a question from a sub-agent and answer it based on the original task context.
-   * @param {string} fromAgentId - The sender's agent ID
-   * @param {string} question - The question text
-   * @returns {Promise<string>} Answer to the question
+   * Spawn N sub-agents and wire them up with display names and sibling references.
    */
-  async receiveQuestion(fromAgentId, question) {
-    const fromName = fromAgentId === 'sub-agent-alpha' ? this.agentNames.alpha
-      : fromAgentId === 'sub-agent-beta' ? this.agentNames.beta
-      : fromAgentId;
+  _spawnAgents(count) {
+    // Clean up any previously registered sub-agents
+    const bus = getCommunicationBus();
+    for (const agent of this.subAgents) {
+      bus.unregisterAgent(agent.agentId);
+    }
 
+    this.agentCount = count;
+    this.agentNames = getAgentNames(count);
+    this.subAgents = [];
+    this.subTasks = {};
+    this.subTaskResults = {};
+
+    for (let i = 0; i < count; i++) {
+      const agent = createSubAgent(i);
+      agent.setDisplayName(this.agentNames[i]);
+      this.subAgents.push(agent);
+    }
+
+    // Wire sibling references
+    for (let i = 0; i < count; i++) {
+      const siblings = this.subAgents
+        .filter((_, j) => j !== i)
+        .map(a => ({ agentId: a.agentId, displayName: a.displayName }));
+      this.subAgents[i].setSiblingAgents(siblings);
+    }
+  }
+
+  async receiveQuestion(fromAgentId, question) {
+    const fromName = this.agentNames[this._agentIndex(fromAgentId)] || fromAgentId;
     this.log('question_received', { from: fromAgentId, question });
 
-    // Build a focused prompt so the master can answer using its full context
     const answerPrompt = `${fromName} is asking you a question while working on their subtask:\n\n"${question}"\n\nAnswer the question helpfully and concisely based on the original user task and the context you have. Do NOT re-assign tasks or break down work — just answer the question.`;
 
     try {
@@ -198,9 +155,7 @@ export class MasterHandler {
         ...this.conversationHistory,
         { role: 'user', content: answerPrompt }
       ]);
-
       this.log('question_answered', { from: fromAgentId, answerLength: response.length });
-
       return response;
     } catch (error) {
       this.log('question_answer_failed', { from: fromAgentId, error: error.message });
@@ -208,77 +163,41 @@ export class MasterHandler {
     }
   }
 
-  /**
-   * Receive a general message from another agent (implements the communication bus interface).
-   * @param {string} fromAgentId - The sender's agent ID
-   * @param {string} message - The message content
-   * @returns {Promise<string>} Response
-   */
   async receiveMessage(fromAgentId, message) {
-    // Delegate to receiveQuestion for simplicity
     return this.receiveQuestion(fromAgentId, message);
   }
 
-  /**
-   * Log an execution event
-   * @param {string} event - Event type
-   * @param {Object} data - Event data
-   */
-  log(event, data = {}) {
-    this.executionLog.push({
-      timestamp: new Date().toISOString(),
-      event,
-      ...data
-    });
+  _agentIndex(agentId) {
+    const m = String(agentId).match(/sub-agent-(\d+)/);
+    return m ? parseInt(m[1], 10) : -1;
   }
 
-  /**
-   * Process a user task - analyze, break down, and coordinate sub-agents
-   * @param {string} task - The user's task
-   * @param {Function} onMessage - Callback for streaming messages to the dashboard
-   * @returns {Promise<string>} Final synthesized response
-   */
+  _agentKey(index) {
+    return String(index);
+  }
+
+  log(event, data = {}) {
+    this.executionLog.push({ timestamp: new Date().toISOString(), event, ...data });
+  }
+
   async processTask(task, onMessage = null) {
-    // Clear previous execution log
     this.executionLog = [];
     this.log('task_started', { task });
 
-    // Add user task to history
-    this.conversationHistory.push({
-      role: 'user',
-      content: `User's task: "${task}"`
-    });
+    this.conversationHistory.push({ role: 'user', content: `User's task: "${task}"` });
 
-    // Send dynamic agent names to the frontend
     if (onMessage) {
-      onMessage({
-        type: 'agent-names',
-        names: this.agentNames
-      });
+      onMessage({ type: 'status', agent: 'master-handler', message: 'Analyzing task complexity and determining agent count...' });
     }
 
-    // Step 1: Analyze task and determine how to break it down
-    if (onMessage) {
-      onMessage({
-        type: 'status',
-        agent: 'master-handler',
-        message: 'Analyzing task and determining how to break it down...'
-      });
-    }
-
-    // Analyze task with retry
+    // Step 1: Analyze task — the LLM decides how many agents and what subtasks
     const analysisResult = await withRetry(
       () => this.analyzeTask(task),
       'task_analysis',
       (retryInfo) => {
         this.log('retry', retryInfo);
         if (onMessage) {
-          onMessage({
-            type: 'retry',
-            agent: 'master-handler',
-            message: `Retrying task analysis (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`,
-            ...retryInfo
-          });
+          onMessage({ type: 'retry', agent: 'master-handler', message: `Retrying task analysis (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`, ...retryInfo });
         }
       }
     );
@@ -289,8 +208,17 @@ export class MasterHandler {
     }
 
     const taskAnalysis = analysisResult.result;
-    this.log('task_analyzed', { explanation: taskAnalysis.explanation });
-    
+    const agentCount = taskAnalysis.subtasks.length;
+    this.log('task_analyzed', { explanation: taskAnalysis.explanation, agentCount });
+
+    // Spawn the determined number of agents
+    this._spawnAgents(agentCount);
+
+    // Send agent names to frontend
+    if (onMessage) {
+      onMessage({ type: 'agent-names', names: this.agentNames, count: agentCount });
+    }
+
     if (onMessage) {
       onMessage({
         type: 'task-breakdown',
@@ -300,101 +228,57 @@ export class MasterHandler {
       });
     }
 
-    // Step 2: Assign subtasks to sub-agents
-    const subtasks = taskAnalysis.subtasks;
-    this.subTasks.alpha = subtasks[0];
-    this.subTasks.beta = subtasks[1];
-
-    if (onMessage) {
-      onMessage({
-        type: 'status',
-        agent: 'master-handler',
-        message: `Assigning subtasks to ${this.agentNames.alpha} & ${this.agentNames.beta}...`
-      });
+    // Step 2: Assign subtasks
+    for (let i = 0; i < agentCount; i++) {
+      this.subTasks[i] = taskAnalysis.subtasks[i];
     }
 
-    // Update master status to waiting
+    const agentNameList = Object.values(this.agentNames).join(', ');
     if (onMessage) {
-      onMessage({
-        type: 'status',
-        agent: 'master-handler',
-        message: `Waiting for ${this.agentNames.alpha} & ${this.agentNames.beta} to complete...`
-      });
+      onMessage({ type: 'status', agent: 'master-handler', message: `Assigning subtasks to ${agentNameList}...` });
+      onMessage({ type: 'status', agent: 'master-handler', message: `Waiting for all agents to complete...` });
     }
 
-    // Process both subtasks in parallel with error recovery
-    const results = await this.processSubTasksWithRecovery(subtasks, onMessage);
-
-    // Handle partial failures
-    const { alphaResult, betaResult, partialFailure } = results;
-    this.subTaskResults.alpha = alphaResult;
-    this.subTaskResults.beta = betaResult;
+    // Step 3: Process all subtasks in parallel
+    const results = await this.processSubTasksWithRecovery(taskAnalysis.subtasks, onMessage);
 
     // Log sub-agent results to dashboard (Round 1)
     if (onMessage) {
-      if (alphaResult) {
-        onMessage({
-          type: 'agent-result',
-          agent: 'alpha',
-          message: alphaResult,
-          round: 1
-        });
-      }
-      if (betaResult) {
-        onMessage({
-          type: 'agent-result',
-          agent: 'beta',
-          message: betaResult,
-          round: 1
-        });
+      for (let i = 0; i < agentCount; i++) {
+        if (results[i]) {
+          onMessage({ type: 'agent-result', agent: i, agentIndex: i, message: results[i], round: 1 });
+        }
       }
     }
 
-    if (partialFailure) {
-      this.log('partial_failure', { 
-        alphaSuccess: !!alphaResult, 
-        betaSuccess: !!betaResult 
-      });
-      
-      if (onMessage) {
-        onMessage({
-          type: 'warning',
-          agent: 'master-handler',
-          message: 'One or more agents encountered issues. Proceeding with available results.'
-        });
-      }
+    // Check for partial failures
+    const anyFailed = results.some((r, i) => r && r.startsWith('['));
+    if (anyFailed && onMessage) {
+      onMessage({ type: 'warning', agent: 'master-handler', message: 'One or more agents encountered issues. Proceeding with available results.' });
     }
 
-    // ── Step 3: Evaluation & Follow-up Loop ──
+    // Step 4: Evaluation & Follow-up Loop
     const MAX_FOLLOW_UP_ROUNDS = 2;
-    const allResults = {
-      alpha: [alphaResult],
-      beta: [betaResult]
-    };
+    const allResults = {};
+    for (let i = 0; i < agentCount; i++) {
+      allResults[i] = [results[i]];
+    }
 
     for (let round = 1; round <= MAX_FOLLOW_UP_ROUNDS; round++) {
       if (onMessage) {
-        onMessage({
-          type: 'status',
-          agent: 'master-handler',
-          message: `Evaluating agent results (round ${round})...`
-        });
+        onMessage({ type: 'status', agent: 'master-handler', message: `Evaluating agent results (round ${round})...` });
       }
 
-      const latestAlpha = allResults.alpha[allResults.alpha.length - 1];
-      const latestBeta = allResults.beta[allResults.beta.length - 1];
+      const latestResults = {};
+      for (let i = 0; i < agentCount; i++) {
+        latestResults[i] = allResults[i][allResults[i].length - 1];
+      }
 
-      const evaluation = await this.evaluateResults(task, latestAlpha, latestBeta);
+      const evaluation = await this.evaluateResults(task, latestResults);
       this.log('evaluation', { round, satisfied: evaluation.satisfied });
 
       if (onMessage) {
-        onMessage({
-          type: 'evaluation',
-          agent: 'master-handler',
-          message: evaluation.reasoning,
-          satisfied: evaluation.satisfied,
-          round
-        });
+        onMessage({ type: 'evaluation', agent: 'master-handler', message: evaluation.reasoning, satisfied: evaluation.satisfied, round });
       }
 
       if (evaluation.satisfied) {
@@ -404,52 +288,27 @@ export class MasterHandler {
 
       // Assign follow-up tasks
       if (onMessage) {
-        onMessage({
-          type: 'status',
-          agent: 'master-handler',
-          message: `Assigning follow-up tasks (round ${round})...`
-        });
+        onMessage({ type: 'status', agent: 'master-handler', message: `Assigning follow-up tasks (round ${round})...` });
       }
 
       const followUpPromises = [];
 
-      if (evaluation.followUps.alpha) {
-        const previousAlphaOutput = allResults.alpha[allResults.alpha.length - 1] || '';
-        const enrichedAlphaTask = `FOLLOW-UP REQUEST FROM MASTER HANDLER\n\nYour previous output was:\n--- YOUR PREVIOUS OUTPUT ---\n${previousAlphaOutput}\n--- END PREVIOUS OUTPUT ---\n\nMaster Handler's evaluation: ${evaluation.reasoning}\n\nFollow-up task: ${evaluation.followUps.alpha}\n\nPlease address the gaps identified above and produce an improved, more complete response. Build on your previous work — do not start from scratch.`;
-        this.log('follow_up_assigned', { agent: 'alpha', round, task: evaluation.followUps.alpha });
-        if (onMessage) {
-          onMessage({
-            type: 'follow-up-assignment',
-            agent: 'master-handler',
-            target: 'alpha',
-            message: evaluation.followUps.alpha,
-            round: round + 1
-          });
-        }
-        followUpPromises.push(
-          this.processFollowUpTask('alpha', enrichedAlphaTask, onMessage)
-            .then(r => ({ agent: 'alpha', result: r }))
-            .catch(e => ({ agent: 'alpha', result: `[Follow-up failed: ${e.message}]` }))
-        );
-      }
+      for (let i = 0; i < agentCount; i++) {
+        const followUp = evaluation.followUps[i];
+        if (!followUp) continue;
 
-      if (evaluation.followUps.beta) {
-        const previousBetaOutput = allResults.beta[allResults.beta.length - 1] || '';
-        const enrichedBetaTask = `FOLLOW-UP REQUEST FROM MASTER HANDLER\n\nYour previous output was:\n--- YOUR PREVIOUS OUTPUT ---\n${previousBetaOutput}\n--- END PREVIOUS OUTPUT ---\n\nMaster Handler's evaluation: ${evaluation.reasoning}\n\nFollow-up task: ${evaluation.followUps.beta}\n\nPlease address the gaps identified above and produce an improved, more complete response. Build on your previous work — do not start from scratch.`;
-        this.log('follow_up_assigned', { agent: 'beta', round, task: evaluation.followUps.beta });
+        const previousOutput = allResults[i][allResults[i].length - 1] || '';
+        const enrichedTask = `FOLLOW-UP REQUEST FROM MASTER HANDLER\n\nYour previous output was:\n--- YOUR PREVIOUS OUTPUT ---\n${previousOutput}\n--- END PREVIOUS OUTPUT ---\n\nMaster Handler's evaluation: ${evaluation.reasoning}\n\nFollow-up task: ${followUp}\n\nPlease address the gaps identified above and produce an improved, more complete response. Build on your previous work — do not start from scratch.`;
+
+        this.log('follow_up_assigned', { agent: i, round, task: followUp });
         if (onMessage) {
-          onMessage({
-            type: 'follow-up-assignment',
-            agent: 'master-handler',
-            target: 'beta',
-            message: evaluation.followUps.beta,
-            round: round + 1
-          });
+          onMessage({ type: 'follow-up-assignment', agent: 'master-handler', target: i, agentIndex: i, message: followUp, round: round + 1 });
         }
+
         followUpPromises.push(
-          this.processFollowUpTask('beta', enrichedBetaTask, onMessage)
-            .then(r => ({ agent: 'beta', result: r }))
-            .catch(e => ({ agent: 'beta', result: `[Follow-up failed: ${e.message}]` }))
+          this.processFollowUpTask(i, enrichedTask, onMessage)
+            .then(r => ({ agentIndex: i, result: r }))
+            .catch(e => ({ agentIndex: i, result: `[Follow-up failed: ${e.message}]` }))
         );
       }
 
@@ -457,41 +316,26 @@ export class MasterHandler {
 
       const followUpResults = await Promise.all(followUpPromises);
 
-      for (const { agent, result } of followUpResults) {
-        allResults[agent].push(result);
+      for (const { agentIndex, result } of followUpResults) {
+        allResults[agentIndex].push(result);
         if (onMessage) {
-          onMessage({
-            type: 'agent-result',
-            agent,
-            message: result,
-            round: round + 1
-          });
+          onMessage({ type: 'agent-result', agent: agentIndex, agentIndex, message: result, round: round + 1 });
         }
       }
     }
 
-    // ── Step 4: Synthesize all results ──
+    // Step 5: Synthesize all results
     if (onMessage) {
-      onMessage({
-        type: 'status',
-        agent: 'master-handler',
-        message: `Synthesizing all results from ${this.agentNames.alpha} & ${this.agentNames.beta}...`
-      });
+      onMessage({ type: 'status', agent: 'master-handler', message: `Synthesizing results from all ${agentCount} agents...` });
     }
 
-    // Synthesize with retry
     const synthesisResult = await withRetry(
       () => this.synthesizeResults(task, allResults),
       'result_synthesis',
       (retryInfo) => {
         this.log('retry', retryInfo);
         if (onMessage) {
-          onMessage({
-            type: 'retry',
-            agent: 'master-handler',
-            message: `Retrying result synthesis (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`,
-            ...retryInfo
-          });
+          onMessage({ type: 'retry', agent: 'master-handler', message: `Retrying result synthesis (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`, ...retryInfo });
         }
       }
     );
@@ -503,312 +347,202 @@ export class MasterHandler {
 
     const synthesis = synthesisResult.result;
 
-    // Add final response to history
-    this.conversationHistory.push({
-      role: 'assistant',
-      content: synthesis
-    });
-
+    this.conversationHistory.push({ role: 'assistant', content: synthesis });
     this.log('task_completed', { synthesisLength: synthesis.length });
 
     if (onMessage) {
-      onMessage({
-        type: 'complete',
-        agent: 'master-handler',
-        message: synthesis
-      });
+      onMessage({ type: 'complete', agent: 'master-handler', message: synthesis });
     }
 
     return synthesis;
   }
 
-  /**
-   * Process subtasks with error recovery and partial failure handling
-   * @param {Array<string>} subtasks - Array of two subtasks
-   * @param {Function} onMessage - Callback for messages
-   * @returns {Promise<Object>} Results object with alpha and beta results
-   */
   async processSubTasksWithRecovery(subtasks, onMessage = null) {
-    // Create communication callback for inter-agent messaging
     const onCommunication = (commEvent) => {
       this.log('inter_agent_communication', commEvent);
-      if (onMessage) {
-        onMessage(commEvent);
+      if (onMessage) onMessage(commEvent);
+    };
+
+    const promises = subtasks.map((subtask, i) => this.processSubTask(i, subtask, onMessage, onCommunication));
+    const settled = await Promise.allSettled(promises);
+
+    const results = settled.map((res, i) => {
+      if (res.status === 'fulfilled') {
+        return res.value;
+      } else {
+        this.log(`subtask_${i}_failed`, { error: res.reason?.message });
+        return `[${this.agentNames[i] || `Agent-${i}`} failed: ${res.reason?.message || 'Unknown error'}]`;
       }
-    };
+    });
 
-    // Process both subtasks in parallel with individual retry logic
-    const [alphaResult, betaResult] = await Promise.allSettled([
-      this.processSubTaskAlpha(subtasks[0], onMessage, onCommunication),
-      this.processSubTaskBeta(subtasks[1], onMessage, onCommunication)
-    ]);
-
-    // Handle results with graceful degradation
-    let alphaValue = null;
-    let betaValue = null;
-    let partialFailure = false;
-
-    if (alphaResult.status === 'fulfilled') {
-      alphaValue = alphaResult.value;
-    } else {
-      this.log('subtask_alpha_failed', { error: alphaResult.reason?.message });
-      alphaValue = `[${this.agentNames.alpha} failed: ${alphaResult.reason?.message || 'Unknown error'}]`;
-      partialFailure = true;
+    const allFailed = settled.every(r => r.status === 'rejected');
+    if (allFailed) {
+      throw new Error('All agents failed: ' + settled.map((r, i) => `Agent-${i}: ${r.reason?.message}`).join('; '));
     }
 
-    if (betaResult.status === 'fulfilled') {
-      betaValue = betaResult.value;
-    } else {
-      this.log('subtask_beta_failed', { error: betaResult.reason?.message });
-      betaValue = `[${this.agentNames.beta} failed: ${betaResult.reason?.message || 'Unknown error'}]`;
-      partialFailure = true;
-    }
-
-    // If both failed, throw an error
-    if (alphaResult.status === 'rejected' && betaResult.status === 'rejected') {
-      throw new Error(
-        `Both agents failed. Alpha: ${alphaResult.reason?.message}. Beta: ${betaResult.reason?.message}`
-      );
-    }
-
-    return {
-      alphaResult: alphaValue,
-      betaResult: betaValue,
-      partialFailure
-    };
+    return results;
   }
 
-  /**
-   * Analyze the task and determine how to break it down
-   * @param {string} task - The task to analyze
-   * @returns {Promise<Object>} Analysis result with subtasks
-   */
   async analyzeTask(task) {
-    const analysisPrompt = `Analyze this task and break it down into exactly 2 independent subtasks that can be worked on in parallel by different agents.
+    const analysisPrompt = `Analyze this task and determine how many Agents (between 1 and ${MAX_SUB_AGENTS}) are needed to solve it effectively.
 
-IMPORTANT: The two subtasks MUST be DIFFERENT from each other. Each subtask should cover a distinct aspect of the overall task.
+IMPORTANT:
+- Simple or single-focus tasks may only need 1 agent.
+- Moderate tasks that can be split into 2-3 independent parts should use 2-3 agents.
+- Complex tasks with many independent components can use up to ${MAX_SUB_AGENTS} agents.
+- Each subtask MUST be meaningfully DIFFERENT from the others.
+- NEVER create more subtasks than there are genuinely independent aspects of the work.
 
 Task: "${task}"
 
 You MUST provide your response in this EXACT format (do not deviate):
-EXPLANATION: [Brief explanation of how you're breaking down the task]
-SUBTASK 1: [First subtask for ${this.agentNames.alpha} - a specific, distinct portion of the work]
-SUBTASK 2: [Second subtask for ${this.agentNames.beta} - a different, complementary portion of the work]`;
+AGENT_COUNT: [number between 1 and ${MAX_SUB_AGENTS}]
+EXPLANATION: [Brief explanation of how you're breaking down the task and why you chose this number of agents]
+SUBTASK 1: [First subtask - a specific, distinct portion of the work]
+SUBTASK 2: [Second subtask - if needed]
+SUBTASK 3: [Third subtask - if needed]
+SUBTASK 4: [Fourth subtask - if needed]
+SUBTASK 5: [Fifth subtask - if needed]
+
+Only include as many SUBTASK lines as the AGENT_COUNT indicates.`;
 
     const response = await chat([
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
       { role: 'user', content: analysisPrompt }
     ]);
 
-    // Parse the response - try structured format first
+    let agentCount = 2;
     let explanation = '';
-    const subtasks = ['', ''];
-    
-    // Try primary parsing: look for EXPLANATION:, SUBTASK 1:, SUBTASK 2: markers
+    const subtasks = [];
+
     const lines = response.split('\n');
     let currentField = '';
+    let currentSubtaskIdx = -1;
+
     for (const line of lines) {
       const stripped = line.replace(/^\*\*|\*\*$/g, '').replace(/^#+\s*/, '').trim();
-      if (/^EXPLANATION\s*:/i.test(stripped)) {
+
+      if (/^AGENT_COUNT\s*:/i.test(stripped)) {
+        const val = parseInt(stripped.replace(/^AGENT_COUNT\s*:/i, '').trim(), 10);
+        if (val >= 1 && val <= MAX_SUB_AGENTS) agentCount = val;
+        currentField = 'agent_count';
+      } else if (/^EXPLANATION\s*:/i.test(stripped)) {
         currentField = 'explanation';
         explanation = stripped.replace(/^EXPLANATION\s*:/i, '').trim();
-      } else if (/^SUBTASK\s*1\s*:/i.test(stripped)) {
-        currentField = 'subtask1';
-        subtasks[0] = stripped.replace(/^SUBTASK\s*1\s*:/i, '').trim();
-      } else if (/^SUBTASK\s*2\s*:/i.test(stripped)) {
-        currentField = 'subtask2';
-        subtasks[1] = stripped.replace(/^SUBTASK\s*2\s*:/i, '').trim();
-      } else if (currentField === 'explanation' && stripped) {
-        explanation += ' ' + stripped;
-      } else if (currentField === 'subtask1' && stripped && !/^SUBTASK/i.test(stripped)) {
-        subtasks[0] += ' ' + stripped;
-      } else if (currentField === 'subtask2' && stripped) {
-        subtasks[1] += ' ' + stripped;
+      } else if (/^SUBTASK\s*(\d+)\s*:/i.test(stripped)) {
+        const match = stripped.match(/^SUBTASK\s*(\d+)\s*:/i);
+        currentSubtaskIdx = parseInt(match[1], 10) - 1;
+        currentField = 'subtask';
+        const content = stripped.replace(/^SUBTASK\s*\d+\s*:/i, '').trim();
+        if (content) {
+          subtasks[currentSubtaskIdx] = content;
+        }
+      } else if (stripped) {
+        if (currentField === 'explanation') {
+          explanation += ' ' + stripped;
+        } else if (currentField === 'subtask' && currentSubtaskIdx >= 0) {
+          subtasks[currentSubtaskIdx] = (subtasks[currentSubtaskIdx] || '') + ' ' + stripped;
+        }
       }
     }
 
-    // Fallback: if parsing produced empty/identical subtasks, try alternate patterns
-    if (!subtasks[0] || !subtasks[1] || subtasks[0] === subtasks[1]) {
-      // Try numbered list: "1. ..." / "2. ..."
-      const numbered = response.match(/(?:^|\n)\s*1[\.\):]\s*(.+?)(?=\n\s*2[\.\):])/s);
-      const numbered2 = response.match(/(?:^|\n)\s*2[\.\):]\s*(.+?)(?=\n\s*(?:3[\.\):]|$))/s);
-      if (numbered && numbered2) {
-        subtasks[0] = numbered[1].trim().split('\n')[0].trim();
-        subtasks[1] = numbered2[1].trim().split('\n')[0].trim();
-      }
+    // Sanitize
+    const cleanSubtasks = subtasks.filter(s => s && s.trim()).map(s => s.trim());
+
+    // If parsing failed, fall back
+    if (cleanSubtasks.length === 0) {
+      cleanSubtasks.push(`First aspect of: ${task}`);
+      cleanSubtasks.push(`Second aspect of: ${task}`);
+      agentCount = 2;
     }
 
-    // Safety: if subtasks are still empty, use generic halves
-    if (!subtasks[0]) subtasks[0] = `First half of the task: ${task}`;
-    if (!subtasks[1]) subtasks[1] = `Second half of the task: ${task}`;
-    if (!explanation) explanation = 'Breaking the task into two complementary subtasks.';
-
-    // Final guard: if somehow both subtasks are identical, differentiate them
-    if (subtasks[0].trim() === subtasks[1].trim()) {
-      subtasks[0] = `Research and analyze the first aspect of: ${task}`;
-      subtasks[1] = `Research and analyze the second/complementary aspect of: ${task}`;
+    // Ensure count matches subtasks
+    while (cleanSubtasks.length < agentCount) {
+      cleanSubtasks.push(`Additional aspect ${cleanSubtasks.length + 1} of: ${task}`);
+    }
+    if (cleanSubtasks.length > agentCount) {
+      cleanSubtasks.length = agentCount;
     }
 
-    return {
-      explanation: explanation.trim(),
-      subtasks: subtasks.map(s => s.trim())
-    };
+    // Clamp to MAX_SUB_AGENTS
+    if (cleanSubtasks.length > MAX_SUB_AGENTS) {
+      cleanSubtasks.length = MAX_SUB_AGENTS;
+    }
+
+    if (!explanation) explanation = `Breaking the task into ${cleanSubtasks.length} subtasks.`;
+
+    return { explanation: explanation.trim(), subtasks: cleanSubtasks };
   }
 
-  /**
-   * Process subtask for Alpha agent with retry logic
-   */
-  async processSubTaskAlpha(subtask, onMessage, onCommunication = null) {
+  async processSubTask(agentIndex, subtask, onMessage, onCommunication = null) {
     if (onMessage) {
-      onMessage({
-        type: 'status',
-        agent: 'alpha',
-        message: 'Processing subtask...'
-      });
+      onMessage({ type: 'status', agent: agentIndex, agentIndex, message: 'Processing subtask...' });
     }
 
-    // Streaming callback: forward each token to the dashboard in real time
     const onChunk = onMessage
-      ? (chunk) => onMessage({ type: 'streaming', agent: 'alpha', chunk })
+      ? (chunk) => onMessage({ type: 'streaming', agent: agentIndex, agentIndex, chunk })
       : null;
 
-    // Process with retry
     const result = await withRetry(
-      () => this.subAgentAlpha.processSubtask(subtask, onChunk, onCommunication),
-      'subtask_alpha',
+      () => this.subAgents[agentIndex].processSubtask(subtask, onChunk, onCommunication),
+      `subtask_${agentIndex}`,
       (retryInfo) => {
-        this.log('retry', { ...retryInfo, agent: 'alpha' });
+        this.log('retry', { ...retryInfo, agent: agentIndex });
         if (onMessage) {
-          onMessage({
-            type: 'retry',
-            agent: 'alpha',
-            message: `Retrying subtask (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`,
-            ...retryInfo
-          });
+          onMessage({ type: 'retry', agent: agentIndex, agentIndex, message: `Retrying subtask (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`, ...retryInfo });
         }
       }
     );
 
-    if (!result.success) {
-      throw new Error(result.error);
-    }
+    if (!result.success) throw new Error(result.error);
 
-    // Signal that streaming has ended for this agent
     if (onMessage) {
-      onMessage({ type: 'stream-end', agent: 'alpha' });
+      onMessage({ type: 'stream-end', agent: agentIndex, agentIndex });
     }
 
-    console.log(`\n===== AGENT ALPHA RESULT (${result.result?.length || 0} chars) =====`);
+    console.log(`\n===== AGENT ${agentIndex} (${this.agentNames[agentIndex]}) RESULT (${result.result?.length || 0} chars) =====`);
     console.log(result.result?.substring(0, 300) + (result.result?.length > 300 ? '...' : ''));
-    console.log('===== END ALPHA RESULT =====\n');
+    console.log(`===== END AGENT ${agentIndex} RESULT =====\n`);
 
     if (onMessage) {
-      onMessage({
-        type: 'task-complete',
-        agent: 'alpha',
-        message: 'Subtask completed'
-      });
+      onMessage({ type: 'task-complete', agent: agentIndex, agentIndex, message: 'Subtask completed' });
     }
 
     return result.result;
   }
 
-  /**
-   * Process subtask for Beta agent with retry logic
-   */
-  async processSubTaskBeta(subtask, onMessage, onCommunication = null) {
-    if (onMessage) {
-      onMessage({
-        type: 'status',
-        agent: 'beta',
-        message: 'Processing subtask...'
-      });
-    }
-
-    // Streaming callback: forward each token to the dashboard in real time
-    const onChunk = onMessage
-      ? (chunk) => onMessage({ type: 'streaming', agent: 'beta', chunk })
-      : null;
-
-    // Process with retry
-    const result = await withRetry(
-      () => this.subAgentBeta.processSubtask(subtask, onChunk, onCommunication),
-      'subtask_beta',
-      (retryInfo) => {
-        this.log('retry', { ...retryInfo, agent: 'beta' });
-        if (onMessage) {
-          onMessage({
-            type: 'retry',
-            agent: 'beta',
-            message: `Retrying subtask (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`,
-            ...retryInfo
-          });
-        }
-      }
-    );
-
-    if (!result.success) {
-      throw new Error(result.error);
-    }
-
-    // Signal that streaming has ended for this agent
-    if (onMessage) {
-      onMessage({ type: 'stream-end', agent: 'beta' });
-    }
-
-    console.log(`\n===== AGENT BETA RESULT (${result.result?.length || 0} chars) =====`);
-    console.log(result.result?.substring(0, 300) + (result.result?.length > 300 ? '...' : ''));
-    console.log('===== END BETA RESULT =====\n');
-
-    if (onMessage) {
-      onMessage({
-        type: 'task-complete',
-        agent: 'beta',
-        message: 'Subtask completed'
-      });
-    }
-
-    return result.result;
-  }
-
-  /**
-   * Synthesize results from both sub-agents across all rounds
-   * @param {string} originalTask - The original task
-   * @param {Object} allResults - { alpha: string[], beta: string[] } results from all rounds
-   * @returns {Promise<string>} Synthesized response
-   */
   async synthesizeResults(originalTask, allResults) {
-    // Build per-agent result blocks that include all rounds
-    const formatAgentResults = (agentName, results) => {
+    const agentBlocks = [];
+    for (let i = 0; i < this.agentCount; i++) {
+      const agentName = this.agentNames[i];
+      const results = allResults[i] || [];
       if (results.length === 1) {
-        return `${agentName} produced this output:\n--- ${agentName.toUpperCase()} OUTPUT ---\n${results[0]}\n--- END ---`;
+        agentBlocks.push(`${agentName} produced this output:\n--- ${agentName.toUpperCase()} OUTPUT ---\n${results[0]}\n--- END ---`);
+      } else {
+        const parts = results.map((r, j) => {
+          const label = j === 0 ? 'Initial task' : `Follow-up round ${j}`;
+          return `${agentName} - ${label}:\n--- ${agentName.toUpperCase()} ROUND ${j + 1} ---\n${r}\n--- END ---`;
+        });
+        agentBlocks.push(parts.join('\n\n'));
       }
-      return results.map((r, i) => {
-        const label = i === 0 ? 'Initial task' : `Follow-up round ${i}`;
-        return `${agentName} — ${label}:\n--- ${agentName.toUpperCase()} ROUND ${i + 1} ---\n${r}\n--- END ---`;
-      }).join('\n\n');
-    };
+    }
 
-    const alphaBlock = formatAgentResults(this.agentNames.alpha, allResults.alpha);
-    const betaBlock = formatAgentResults(this.agentNames.beta, allResults.beta);
-    const totalRounds = Math.max(allResults.alpha.length, allResults.beta.length);
+    const totalRounds = Math.max(...Object.values(allResults).map(r => r.length));
     const roundsNote = totalRounds > 1
-      ? `\n\nNote: The sub-agents completed ${totalRounds} round(s) of work (initial + ${totalRounds - 1} follow-up(s)). Incorporate findings from ALL rounds.`
+      ? `\n\nNote: The agents completed ${totalRounds} round(s) of work. Incorporate findings from ALL rounds.`
       : '';
 
-    const synthesisPrompt = `You are the Master Handler synthesizing results from your two Agents: ${this.agentNames.alpha} and ${this.agentNames.beta}.
+    const agentNameList = Object.values(this.agentNames).map(n => `"${n}"`).join(', ');
+
+    const synthesisPrompt = `You are the Master Handler synthesizing results from your ${this.agentCount} Agents: ${agentNameList}.
 
 The user originally requested: "${originalTask}"
 
-${alphaBlock}
-
-${betaBlock}
+${agentBlocks.join('\n\n')}
 ${roundsNote}
 
-IMPORTANT: Always refer to the agents by their names: "${this.agentNames.alpha}" and "${this.agentNames.beta}". Do NOT call them "Alpha" or "Beta".
-The outputs above ARE the completed results from the agents. Do NOT say you haven't received them. Synthesize these results into a coherent, complete final response for the user. Combine the findings from all rounds, address any overlaps or conflicts, and present a unified solution.`;
+IMPORTANT: Always refer to the agents by their names. The outputs above ARE the completed results. Synthesize these results into a coherent, complete final response for the user. Combine findings, address overlaps or conflicts, and present a unified solution.`;
 
-    // Use a CLEAN messages array — do NOT pass conversationHistory here.
     const response = await chat([
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
       { role: 'user', content: synthesisPrompt }
@@ -817,43 +551,36 @@ The outputs above ARE the completed results from the agents. Do NOT say you have
     return response;
   }
 
-  /**
-   * Evaluate sub-agent results and decide whether follow-up tasks are needed
-   * @param {string} originalTask - The original user task
-   * @param {string} alphaResult - Latest result from Alpha
-   * @param {string} betaResult - Latest result from Beta
-   * @returns {Promise<{satisfied: boolean, reasoning: string, followUps: {alpha: string|null, beta: string|null}}>}
-   */
-  async evaluateResults(originalTask, alphaResult, betaResult) {
-    const alphaName = this.agentNames.alpha;
-    const betaName = this.agentNames.beta;
+  async evaluateResults(originalTask, latestResults) {
+    const agentBlocks = [];
+    for (let i = 0; i < this.agentCount; i++) {
+      const agentName = this.agentNames[i];
+      agentBlocks.push(`${agentName}'s latest output:\n--- ${agentName.toUpperCase()} ---\n${latestResults[i] || '[No output]'}\n--- END ${agentName.toUpperCase()} ---`);
+    }
+
+    const agentNameList = Object.values(this.agentNames).map(n => `"${n}"`).join(', ');
+
+    let followUpLines = '';
+    for (let i = 0; i < this.agentCount; i++) {
+      followUpLines += `FOLLOW_UP_${i}: [Follow-up task for ${this.agentNames[i]}, or NONE if their work is adequate]\n`;
+    }
 
     const evaluationPrompt = `You are the Master Handler evaluating your Agents' work.
 
 Original user task: "${originalTask}"
 
-${alphaName}'s latest output:
---- ${alphaName.toUpperCase()} ---
-${alphaResult || '[No output]'}
---- END ${alphaName.toUpperCase()} ---
-
-${betaName}'s latest output:
---- ${betaName.toUpperCase()} ---
-${betaResult || '[No output]'}
---- END ${betaName.toUpperCase()} ---
+${agentBlocks.join('\n\n')}
 
 Critically evaluate whether these results TOGETHER adequately address the user's task.
 Consider: completeness, depth, accuracy, relevance, and whether anything important is missing.
 
-IMPORTANT: Always refer to the agents by their names: "${alphaName}" and "${betaName}". Do NOT call them "Alpha" or "Beta".
+IMPORTANT: Always refer to the agents by their names: ${agentNameList}.
 
 You MUST respond in this EXACT format:
 
 VERDICT: SATISFIED or NEEDS_FOLLOW_UP
-REASONING: [Brief explanation of your evaluation — use agent names ${alphaName} and ${betaName}]
-FOLLOW_UP_ALPHA: [Follow-up task for ${alphaName}, or NONE if their work is adequate]
-FOLLOW_UP_BETA: [Follow-up task for ${betaName}, or NONE if their work is adequate]
-
+REASONING: [Brief explanation of your evaluation]
+${followUpLines}
 Only request follow-ups for genuinely important gaps. Minor stylistic issues do not warrant follow-ups.`;
 
     const response = await chat([
@@ -861,15 +588,17 @@ Only request follow-ups for genuinely important gaps. Minor stylistic issues do 
       { role: 'user', content: evaluationPrompt }
     ]);
 
-    // Parse the evaluation response
     let satisfied = true;
     let reasoning = '';
-    const followUps = { alpha: null, beta: null };
+    const followUps = {};
 
-    const lines = response.split('\n');
+    const responseLines = response.split('\n');
     let currentField = '';
-    for (const line of lines) {
+    let currentFollowUpIdx = -1;
+
+    for (const line of responseLines) {
       const stripped = line.replace(/^\*\*|\*\*$/g, '').replace(/^#+\s*/, '').trim();
+
       if (/^VERDICT\s*:/i.test(stripped)) {
         const verdict = stripped.replace(/^VERDICT\s*:/i, '').trim().toUpperCase();
         satisfied = !verdict.includes('NEEDS_FOLLOW_UP') && !verdict.includes('FOLLOW');
@@ -877,29 +606,38 @@ Only request follow-ups for genuinely important gaps. Minor stylistic issues do 
       } else if (/^REASONING\s*:/i.test(stripped)) {
         currentField = 'reasoning';
         reasoning = stripped.replace(/^REASONING\s*:/i, '').trim();
+      } else if (/^FOLLOW_UP_(\d+)\s*:/i.test(stripped)) {
+        const match = stripped.match(/^FOLLOW_UP_(\d+)\s*:/i);
+        currentFollowUpIdx = parseInt(match[1], 10);
+        currentField = 'followup';
+        const val = stripped.replace(/^FOLLOW_UP_\d+\s*:/i, '').trim();
+        if (val && !/^NONE$/i.test(val) && !/^N\/A$/i.test(val)) {
+          followUps[currentFollowUpIdx] = val;
+        }
       } else if (/^FOLLOW_UP_ALPHA\s*:/i.test(stripped)) {
-        currentField = 'alpha';
+        currentFollowUpIdx = 0;
+        currentField = 'followup';
         const val = stripped.replace(/^FOLLOW_UP_ALPHA\s*:/i, '').trim();
         if (val && !/^NONE$/i.test(val) && !/^N\/A$/i.test(val)) {
-          followUps.alpha = val;
+          followUps[0] = val;
         }
       } else if (/^FOLLOW_UP_BETA\s*:/i.test(stripped)) {
-        currentField = 'beta';
+        currentFollowUpIdx = 1;
+        currentField = 'followup';
         const val = stripped.replace(/^FOLLOW_UP_BETA\s*:/i, '').trim();
         if (val && !/^NONE$/i.test(val) && !/^N\/A$/i.test(val)) {
-          followUps.beta = val;
+          followUps[1] = val;
         }
-      } else if (stripped && currentField === 'reasoning') {
-        reasoning += ' ' + stripped;
-      } else if (stripped && currentField === 'alpha' && followUps.alpha) {
-        followUps.alpha += ' ' + stripped;
-      } else if (stripped && currentField === 'beta' && followUps.beta) {
-        followUps.beta += ' ' + stripped;
+      } else if (stripped) {
+        if (currentField === 'reasoning') {
+          reasoning += ' ' + stripped;
+        } else if (currentField === 'followup' && currentFollowUpIdx >= 0 && followUps[currentFollowUpIdx]) {
+          followUps[currentFollowUpIdx] += ' ' + stripped;
+        }
       }
     }
 
-    // If verdict says needs follow-up but no specific tasks were parsed, mark as satisfied
-    if (!satisfied && !followUps.alpha && !followUps.beta) {
+    if (!satisfied && Object.keys(followUps).length === 0) {
       satisfied = true;
       reasoning += ' (No specific follow-up tasks identified, proceeding with current results.)';
     }
@@ -908,30 +646,19 @@ Only request follow-ups for genuinely important gaps. Minor stylistic issues do 
 
     console.log(`\n===== EVALUATION: ${satisfied ? 'SATISFIED' : 'NEEDS FOLLOW-UP'} =====`);
     console.log(`Reasoning: ${reasoning}`);
-    if (followUps.alpha) console.log(`Follow-up Alpha: ${followUps.alpha}`);
-    if (followUps.beta) console.log(`Follow-up Beta: ${followUps.beta}`);
+    for (const [idx, task] of Object.entries(followUps)) {
+      console.log(`Follow-up Agent-${idx}: ${task}`);
+    }
     console.log('===== END EVALUATION =====\n');
 
     return { satisfied, reasoning, followUps };
   }
 
-  /**
-   * Process a follow-up task for a specific sub-agent
-   * @param {'alpha'|'beta'} agent - Which agent to assign the follow-up to
-   * @param {string} followUpTask - The follow-up task description
-   * @param {Function} onMessage - Dashboard callback
-   * @returns {Promise<string>} The follow-up result
-   */
-  async processFollowUpTask(agent, followUpTask, onMessage = null) {
-    const subAgent = agent === 'alpha' ? this.subAgentAlpha : this.subAgentBeta;
-    const agentLabel = agent === 'alpha' ? 'Alpha' : 'Beta';
+  async processFollowUpTask(agentIndex, followUpTask, onMessage = null) {
+    const subAgent = this.subAgents[agentIndex];
 
     if (onMessage) {
-      onMessage({
-        type: 'status',
-        agent,
-        message: `Processing follow-up task...`
-      });
+      onMessage({ type: 'status', agent: agentIndex, agentIndex, message: 'Processing follow-up task...' });
     }
 
     const onCommunication = (commEvent) => {
@@ -939,83 +666,57 @@ Only request follow-ups for genuinely important gaps. Minor stylistic issues do 
       if (onMessage) onMessage(commEvent);
     };
 
-    // Streaming callback: forward each token to the dashboard in real time
     const onChunk = onMessage
-      ? (chunk) => onMessage({ type: 'streaming', agent, chunk })
+      ? (chunk) => onMessage({ type: 'streaming', agent: agentIndex, agentIndex, chunk })
       : null;
 
     const result = await withRetry(
       () => subAgent.processSubtask(followUpTask, onChunk, onCommunication),
-      `follow_up_${agent}`,
+      `follow_up_${agentIndex}`,
       (retryInfo) => {
-        this.log('retry', { ...retryInfo, agent });
+        this.log('retry', { ...retryInfo, agent: agentIndex });
         if (onMessage) {
-          onMessage({
-            type: 'retry',
-            agent,
-            message: `Retrying follow-up (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`,
-            ...retryInfo
-          });
+          onMessage({ type: 'retry', agent: agentIndex, agentIndex, message: `Retrying follow-up (attempt ${retryInfo.attempt}/${retryInfo.maxRetries})...`, ...retryInfo });
         }
       }
     );
 
-    if (!result.success) {
-      throw new Error(result.error);
-    }
+    if (!result.success) throw new Error(result.error);
 
-    // Signal that streaming has ended for this agent's follow-up
     if (onMessage) {
-      onMessage({ type: 'stream-end', agent });
+      onMessage({ type: 'stream-end', agent: agentIndex, agentIndex });
     }
 
-    console.log(`\n===== AGENT ${agentLabel} FOLLOW-UP RESULT (${result.result?.length || 0} chars) =====`);
+    console.log(`\n===== AGENT ${agentIndex} (${this.agentNames[agentIndex]}) FOLLOW-UP RESULT (${result.result?.length || 0} chars) =====`);
     console.log(result.result?.substring(0, 300) + (result.result?.length > 300 ? '...' : ''));
-    console.log(`===== END ${agentLabel} FOLLOW-UP =====\n`);
+    console.log(`===== END AGENT ${agentIndex} FOLLOW-UP =====\n`);
 
     if (onMessage) {
-      onMessage({
-        type: 'task-complete',
-        agent,
-        message: 'Follow-up completed'
-      });
+      onMessage({ type: 'task-complete', agent: agentIndex, agentIndex, message: 'Follow-up completed' });
     }
 
     return result.result;
   }
 
-  /**
-   * Get the execution log
-   * @returns {Array} Execution log entries
-   */
-  getExecutionLog() {
-    return [...this.executionLog];
-  }
+  getExecutionLog() { return [...this.executionLog]; }
 
-  /**
-   * Reset the Master Handler for a new task
-   */
   reset() {
     this.conversationHistory = [
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT }
     ];
-    this.subAgentAlpha.reset();
-    this.subAgentBeta.reset();
-    this.subTasks = { alpha: null, beta: null };
-    this.subTaskResults = { alpha: null, beta: null };
+    for (const agent of this.subAgents) {
+      agent.reset();
+    }
+    this.subTasks = {};
+    this.subTaskResults = {};
     this.executionLog = [];
-    
-    // Clear communication bus history
+
     const bus = getCommunicationBus();
     bus.clearHistory();
-    // Re-register master handler
     bus.registerAgent('master-handler', this);
   }
 }
 
-/**
- * Create a new Master Handler instance
- */
 export function createMasterHandler() {
   return new MasterHandler();
 }
