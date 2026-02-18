@@ -39,6 +39,11 @@ class AgentDashboard {
     // Dynamic agent cards container
     this.dynamicAgentCards = document.getElementById('dynamic-agent-cards');
     
+    // Sidebar toggle (mobile)
+    this.sidebar = document.getElementById('sidebar');
+    this.sidebarToggle = document.getElementById('sidebar-toggle');
+    this.sidebarBackdrop = document.getElementById('sidebar-backdrop');
+    
     // Store latest agent results for modal viewing (keyed by agent index)
     this.agentResults = {};
     
@@ -83,6 +88,24 @@ class AgentDashboard {
     });
   }
 
+  // ── Sidebar (mobile) ──
+  toggleSidebar() {
+    if (!this.sidebar) return;
+    const isOpen = !this.sidebar.classList.contains('-translate-x-full');
+    if (isOpen) {
+      this.closeSidebar();
+    } else {
+      this.sidebar.classList.remove('-translate-x-full');
+      if (this.sidebarBackdrop) this.sidebarBackdrop.classList.remove('hidden');
+    }
+  }
+
+  closeSidebar() {
+    if (!this.sidebar) return;
+    this.sidebar.classList.add('-translate-x-full');
+    if (this.sidebarBackdrop) this.sidebarBackdrop.classList.add('hidden');
+  }
+
   connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     this.ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
@@ -116,6 +139,14 @@ class AgentDashboard {
         this.submitTask();
       }
     });
+
+    // Sidebar toggle (mobile)
+    if (this.sidebarToggle) {
+      this.sidebarToggle.addEventListener('click', () => this.toggleSidebar());
+    }
+    if (this.sidebarBackdrop) {
+      this.sidebarBackdrop.addEventListener('click', () => this.closeSidebar());
+    }
     
     this.settingsBtn.addEventListener('click', () => this.showModal());
     this.closeModalBtn.addEventListener('click', () => this.hideModal());

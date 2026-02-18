@@ -63,43 +63,76 @@ function pushRecentModel(provider, model) {
 }
 
 /**
- * Read the JSON config file from disk (or return defaults).
+ * Read config from CONFIG_JSON env var, disk file, or defaults (in that priority).
  * Handles migration from the legacy flat apiKeys/models format.
  */
 function readConfigFile() {
-  try {
-    if (existsSync(CONFIG_FILE)) {
-      const raw = readFileSync(CONFIG_FILE, 'utf-8');
-      const parsed = JSON.parse(raw);
+  let parsed = null;
 
-      // ── Legacy migration: convert flat apiKeys/models to providers array ──
-      if (parsed.apiKeys && !parsed.providers) {
-        const providers = [];
-        for (const [name, apiKey] of Object.entries(parsed.apiKeys)) {
-          providers.push({
-            name,
-            baseUrl: guessBaseUrl(name),
-            apiKey: apiKey || '',
-            model: (parsed.models && parsed.models[name]) || ''
-          });
-        }
-        const activeKey = deriveProviderKey(parsed.baseUrl || 'https://api.openai.com/v1');
-        return {
-          activeProvider: activeKey,
-          providers: providers.length ? providers : defaultFileConfig().providers
-        };
+  // 1) CONFIG_JSON env var takes top priority (Railway / cloud deploys)
+  if (process.env.CONFIG_JSON) {
+    try {
+      let raw = process.env.CONFIG_JSON.trim();
+      // Railway's ENV editor sometimes wraps the value in outer quotes
+      if ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('"') && raw.endsWith('"'))) {
+        raw = raw.slice(1, -1);
       }
+      // Railway's Raw Editor may show escaped quotes (\") — unescape them
+      if (raw.includes('\\"') && !raw.includes('{"')) {
+        raw = raw.replace(/\\"/g, '"');
+      }
+      parsed = JSON.parse(raw);
+      console.log(`CONFIG_JSON parsed OK – activeProvider: ${parsed.activeProvider}, providers: ${(parsed.providers || []).length}`);
+    } catch (e) {
+      console.error('CONFIG_JSON env var is not valid JSON:', e.message);
+      console.error('CONFIG_JSON raw value (first 200 chars):', process.env.CONFIG_JSON.substring(0, 200));
+      // fall through to disk / defaults
+    }
+  }
 
-      // Already in new format
+  // 2) Fall back to disk file
+  if (!parsed) {
+    try {
+      if (existsSync(CONFIG_FILE)) {
+        const raw = readFileSync(CONFIG_FILE, 'utf-8');
+        parsed = JSON.parse(raw);
+      }
+    } catch (e) {
+      console.error('Failed to read config file:', e.message);
+    }
+  }
+
+  if (!parsed) return defaultFileConfig();
+
+  try {
+
+    // ── Legacy migration: convert flat apiKeys/models to providers array ──
+    if (parsed.apiKeys && !parsed.providers) {
+      const providers = [];
+      for (const [name, apiKey] of Object.entries(parsed.apiKeys)) {
+        providers.push({
+          name,
+          baseUrl: guessBaseUrl(name),
+          apiKey: apiKey || '',
+          model: (parsed.models && parsed.models[name]) || ''
+        });
+      }
+      const activeKey = deriveProviderKey(parsed.baseUrl || 'https://api.openai.com/v1');
       return {
-        activeProvider: parsed.activeProvider || defaultFileConfig().activeProvider,
-        providers: Array.isArray(parsed.providers) && parsed.providers.length
-          ? parsed.providers
-          : defaultFileConfig().providers
+        activeProvider: activeKey,
+        providers: providers.length ? providers : defaultFileConfig().providers
       };
     }
+
+    // Already in new format
+    return {
+      activeProvider: parsed.activeProvider || defaultFileConfig().activeProvider,
+      providers: Array.isArray(parsed.providers) && parsed.providers.length
+        ? parsed.providers
+        : defaultFileConfig().providers
+    };
   } catch (e) {
-    console.error('Failed to read config file, using defaults:', e.message);
+    console.error('Failed to parse config data, using defaults:', e.message);
   }
   return defaultFileConfig();
 }
@@ -137,13 +170,22 @@ function writeConfigFile(data) {
 
 // ── Active in-memory config (loaded from file on startup) ──
 
+// readConfigFile() now checks CONFIG_JSON env var first, then disk, then defaults.
 const fileData = readConfigFile();
 
-// Ensure config.json exists on disk from the very first startup so it can be
-// hand-edited or pre-populated before deploying to cloud environments.
-if (!existsSync(CONFIG_FILE)) {
-  writeConfigFile(fileData);
-  console.log(`Created default config file at ${CONFIG_FILE}`);
+// Best-effort: seed data/config.json on disk so runtime changes can be persisted.
+// On Railway this may be ephemeral, which is fine — CONFIG_JSON is always re-read.
+try {
+  if (!existsSync(CONFIG_FILE)) {
+    writeConfigFile(fileData);
+    console.log(`Created default config file at ${CONFIG_FILE}`);
+  }
+} catch (e) {
+  console.warn('Could not write initial config file (read-only FS?):', e.message);
+}
+
+if (process.env.CONFIG_JSON) {
+  console.log('CONFIG_JSON env var detected — using it as primary config source');
 }
 
 const activeProvider = getActiveProvider(fileData);

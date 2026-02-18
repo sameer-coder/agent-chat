@@ -51,7 +51,8 @@ fastify.get('/api/health', async (request, reply) => {
     status: 'ok', 
     apiConfigured: hasApiKey(),
     baseUrl: config.baseUrl,
-    model: config.model
+    model: config.model,
+    configSource: process.env.CONFIG_JSON ? 'CONFIG_JSON env var' : 'disk file'
   };
 });
 
