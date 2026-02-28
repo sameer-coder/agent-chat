@@ -1,15 +1,22 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { getAgentColor } from '../../context/orchestrationReducer.js';
 import { renderMarkdown } from '../../utils.js';
 
+const PREVIEW_LINES = 4;
+
 export default function StreamingMessage({ agentIndex, agentName, content }) {
   const color = getAgentColor(agentIndex);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const contentRef = useRef(null);
 
-  // Count lines for a rough indicator
-  const lineCount = (content || '').split('\n').length;
-  const charCount = (content || '').length;
+  const raw = content || '';
+  const charCount = raw.length;
+
+  // Build a short preview: first N non-empty lines
+  const previewText = useMemo(() => {
+    const lines = raw.split('\n').filter((l) => l.trim() !== '');
+    return lines.slice(0, PREVIEW_LINES).join('\n');
+  }, [raw]);
 
   return (
     <div className="flex gap-2.5 py-2 border-b border-gray-100 animate-fade-slide-in">
@@ -48,18 +55,26 @@ export default function StreamingMessage({ agentIndex, agentName, content }) {
         </div>
 
         {collapsed ? (
-          <div className="mt-1 flex items-center gap-2 text-[11px] text-gray-400 italic">
-            <span
-              className="inline-block w-1.5 h-1.5 rounded-full animate-pulse"
-              style={{ background: color.dot }}
-            />
-            Generating… ({charCount.toLocaleString()} chars)
+          <div className="mt-1">
+            {previewText ? (
+              <div
+                className="md-prose text-[13px] text-gray-500 mt-1 line-clamp-4"
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(previewText) }}
+              />
+            ) : null}
+            <div className="mt-1 flex items-center gap-2 text-[11px] text-gray-400 italic">
+              <span
+                className="inline-block w-1.5 h-1.5 rounded-full animate-pulse"
+                style={{ background: color.dot }}
+              />
+              Generating… ({charCount.toLocaleString()} chars)
+            </div>
           </div>
         ) : (
           <div ref={contentRef}>
             <div
               className="md-prose text-[13px] text-gray-800 mt-1"
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(content || '') }}
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(raw) }}
             />
             <span className="streaming-cursor" />
           </div>

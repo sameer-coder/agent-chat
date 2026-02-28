@@ -128,8 +128,30 @@ function elapsed(startTime) {
   return `${m}:${String(s % 60).padStart(2, '0')}`;
 }
 
+// Actions that should still be processed even when not actively running a task.
+const ALWAYS_ALLOWED = new Set([
+  ActionTypes.SET_CONNECTED,
+  ActionTypes.SET_API_STATUS,
+  ActionTypes.START_TASK,
+  ActionTypes.SELECT_AGENT,
+  ActionTypes.SET_FEED_FILTER,
+  ActionTypes.REMOVE_ACTIVE_EDGE,
+  ActionTypes.CLEAR_ACTIVE_EDGES,
+  // Terminal events that transition isProcessing → false
+  ActionTypes.TASK_COMPLETE,
+  ActionTypes.TASK_STOPPED,
+  ActionTypes.TASK_ERROR,
+]);
+
 // ── Reducer ──
 export function orchestrationReducer(state, action) {
+  // After a task has finished (stop / complete / error), ignore any late-arriving
+  // in-flight messages from the server (e.g. streaming chunks, status updates)
+  // that were broadcast before the server noticed the stop flag.
+  if (!state.isProcessing && !ALWAYS_ALLOWED.has(action.type)) {
+    return state;
+  }
+
   switch (action.type) {
 
     case ActionTypes.SET_CONNECTED:
@@ -283,10 +305,16 @@ export function orchestrationReducer(state, action) {
         timestamp: now(),
         timeLabel: elapsed(state.startTime),
       };
+      const stoppedAgentStatus = {};
+      for (const key of Object.keys(state.agentStatus)) {
+        stoppedAgentStatus[key] = 'Stopped';
+      }
+      stoppedAgentStatus.master = 'Stopped';
       return {
         ...state,
         isProcessing: false,
         streamingBuffers: {},
+        agentStatus: stoppedAgentStatus,
         messages: [...state.messages, msg],
       };
     }

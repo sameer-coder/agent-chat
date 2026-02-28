@@ -87,7 +87,7 @@ export async function withRetry(fn, operationName, onRetry = null) {
 }
 
 const AGENT_NAMES = {
-  0: 'Nova',
+  0: 'Alpha',
   1: 'Cipher',
   2: 'Atlas',
   3: 'Nexus',

@@ -10,7 +10,7 @@
     "dev:client": "cd client && npx vite",
     "build": "cd client && npx vite build",
     "dev:all": "npm run dev & npm run dev:client",
-    "restart": "pkill -f \"node server.js\" && pkill -f \"vite --host\" && sleep 2 && node server.js & cd client && npx vite --host &"
+    "restart": "pkill -f 'node server.js'; pkill -f 'vite'; sleep 1; node server.js & sleep 2 && cd client && npx vite --host"
   },
   "license": "MIT",
   "dependencies": {

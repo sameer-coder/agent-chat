@@ -165,12 +165,12 @@ function AgentNode({ id, agent, position, isSelected, status, onClick, container
       </div>
 
       {/* Label */}
-      <div className="text-[11px] font-semibold whitespace-nowrap" style={{ color: color.dot }}>
+      <div className="text-[11px] font-semibold whitespace-nowrap" style={{ color: '#1e2124' }}>
         {agent.name}
       </div>
 
       {/* Status */}
-      <div className="text-[10px] text-gray-500 whitespace-nowrap">
+      <div className="text-[10px] whitespace-nowrap" style={{ color: '#1e2124' }}>
         {isDone ? '✓ Complete' : isWorking ? '⚡ Working' : status || 'Idle'}
       </div>
     </div>

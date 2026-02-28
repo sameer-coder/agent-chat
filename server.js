@@ -437,7 +437,10 @@ async function handleTask(task, socket) {
   
   try {
     const result = await masterHandler.processTask(task, (message) => {
-      // Broadcast once to all clients (including the requester) to avoid duplicates
+      // Don't broadcast further messages once the user has requested a stop.
+      // Sub-agents running in parallel may still fire callbacks between the
+      // stop signal and their next isStopped() check — silently drop those.
+      if (masterHandler.stopped) return;
       broadcast(message);
     });
     
