@@ -27,7 +27,7 @@ export function resetClient() {
 /**
  * Direct fetch call using native https module to bypass SSL issues
  */
-async function directHttpsRequest(messages, isStream = false) {
+async function directHttpsRequest(messages, isStream = false, maxTokens = 2000) {
   const apiKey = getApiKey();
   const baseUrl = getBaseUrl();
   const model = getModel();
@@ -53,7 +53,7 @@ async function directHttpsRequest(messages, isStream = false) {
     model,
     messages,
     temperature: 0.7,
-    max_tokens: 2000,
+    max_tokens: maxTokens,
     ...(isStream ? { stream: true } : {})
   });
   
@@ -104,6 +104,11 @@ async function directHttpsRequest(messages, isStream = false) {
           reject(new Error(`API error: ${res.statusCode} - ${data}`));
         }
       });
+    });
+
+    // Timeout after 20 seconds to prevent hanging requests
+    req.setTimeout(20000, () => {
+      req.destroy(new Error('Request timed out after 20 seconds. Check the API URL and provider status.'));
     });
     
     req.on('error', (e) => {
@@ -310,8 +315,8 @@ export async function* chatStream(messages) {
 /**
  * Send a chat message and get a complete response
  */
-export async function chat(messages) {
-  return await directHttpsRequest(messages, false);
+export async function chat(messages, maxTokens = 2000) {
+  return await directHttpsRequest(messages, false, maxTokens);
 }
 
 /**
