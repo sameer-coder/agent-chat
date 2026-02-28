@@ -1,4 +1,4 @@
-import { chat, chatStream } from './openaiService.js';
+import { chat, chatStream, setTokenUsageCallback } from './openaiService.js';
 import { createSubAgent, getCommunicationBus, MAX_SUB_AGENTS, TaskStoppedError } from './subAgent.js';
 
 
@@ -87,7 +87,7 @@ export async function withRetry(fn, operationName, onRetry = null) {
 }
 
 const AGENT_NAMES = {
-  0: 'Nova',
+  0: 'Alpha',
   1: 'Cipher',
   2: 'Atlas',
   3: 'Nexus',
@@ -201,6 +201,13 @@ export class MasterHandler {
     this.executionLog = [];
     this.stopped = false;
     this.log('task_started', { task });
+
+    // Wire up token usage tracking — forward every API usage event to the UI
+    setTokenUsageCallback((usage) => {
+      if (onMessage && !this.stopped) {
+        onMessage({ type: 'token-usage', ...usage });
+      }
+    });
 
     this.conversationHistory.push({ role: 'user', content: `User's task: "${task}"` });
 
@@ -381,6 +388,9 @@ export class MasterHandler {
     if (onMessage) {
       onMessage({ type: 'complete', agent: 'master-handler', message: synthesis });
     }
+
+    // Clean up token usage callback
+    setTokenUsageCallback(null);
 
     return synthesis;
   }

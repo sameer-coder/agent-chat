@@ -1,4 +1,4 @@
-// Synapse Frontend
+// Multi-Agent Flow Frontend
 
 class AgentDashboard {
   constructor() {
@@ -1318,21 +1318,28 @@ class AgentDashboard {
     const originalText = this.testConnectionBtn.textContent;
     this.testConnectionBtn.textContent = 'Testing...';
     this.testConnectionBtn.disabled = true;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
     try {
       const response = await fetch('/api/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, baseUrl, model })
+        body: JSON.stringify({ apiKey, baseUrl, model }),
+        signal: controller.signal
       });
       const data = await response.json();
       if (data.success) {
-        alert('\u2705 Connection successful!\n\nModel: ' + model + '\nResponse: ' + data.response.substring(0, 100) + '...');
+        alert('\u2705 Connection successful!\n\nModel: ' + model + '\nResponse: ' + (data.response ? data.response.substring(0, 100) : '(empty)') + '...');
       } else {
         alert('\u274c Connection failed!\n\nError: ' + data.error);
       }
     } catch (error) {
-      alert('\u274c Connection failed!\n\nError: ' + error.message);
+      const message = error.name === 'AbortError'
+        ? 'Request timed out after 25 seconds. Check the API URL and provider status.'
+        : error.message;
+      alert('\u274c Connection failed!\n\nError: ' + message);
     } finally {
+      clearTimeout(timeoutId);
       this.testConnectionBtn.textContent = originalText;
       this.testConnectionBtn.disabled = false;
     }

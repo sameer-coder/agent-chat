@@ -1,0 +1,1115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-Agent Orchestration Dashboard</title>
+<style>
+  :root {
+    --bg: #f0f2f5;
+    --card: #ffffff;
+    --border: #e5e7eb;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --primary: #4f46e5;
+    --master: #4f46e5;
+    --planner: #7c3aed;
+    --researcher: #2563eb;
+    --coder: #059669;
+    --reviewer: #d97706;
+    --tester: #dc2626;
+    --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+    --shadow-lg: 0 4px 12px rgba(0,0,0,.1);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .dashboard {
+    display: grid;
+    grid-template-rows: 56px 1fr;
+    height: 100vh;
+  }
+
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 24px;
+    box-shadow: var(--shadow);
+    z-index: 10;
+  }
+
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .header-task {
+    flex: 1;
+    font-size: 13px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .header-task span { color: var(--text); font-weight: 500; }
+
+  .overall-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .overall-bar {
+    width: 120px;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .overall-bar-fill {
+    height: 100%;
+    background: var(--primary);
+    border-radius: 3px;
+    transition: width .4s ease;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .controls button {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all .15s;
+  }
+
+  .controls button:hover { background: var(--border); }
+  .controls button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+  .controls .speed-label { font-size: 12px; color: var(--muted); }
+
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 1fr 320px;
+    gap: 12px;
+    padding: 12px;
+    overflow: hidden;
+  }
+
+  .panel {
+    background: var(--card);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+
+  .panel-header .badge {
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--bg);
+    padding: 2px 8px;
+    border-radius: 10px;
+    color: var(--muted);
+  }
+
+  /* ===== GRAPH PANEL ===== */
+  .graph-container {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .graph-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
+  .edge.active { stroke: var(--primary); stroke-width: 2; }
+
+  .msg-particle {
+    r: 4;
+    opacity: 0;
+  }
+
+  .agent-node {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: transform .2s;
+    z-index: 2;
+  }
+
+  .agent-node:hover { transform: translate(-50%, -50%) scale(1.08); }
+  .agent-node.selected .node-circle { box-shadow: 0 0 0 3px rgba(79,70,229,.3); }
+
+  .node-circle {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    color: #fff;
+    position: relative;
+    transition: box-shadow .2s;
+  }
+
+  .node-circle.master { width: 56px; height: 56px; font-size: 24px; }
+
+  .node-ring {
+    position: absolute;
+    inset: -3px;
+    border-radius: 50%;
+    border: 2.5px solid transparent;
+    border-top-color: currentColor;
+    animation: none;
+  }
+
+  .node-ring.spinning { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .progress-ring {
+    position: absolute;
+    inset: -4px;
+    width: calc(100% + 8px);
+    height: calc(100% + 8px);
+  }
+
+  .progress-ring circle {
+    fill: none;
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    transform: rotate(-90deg);
+    transform-origin: center;
+    transition: stroke-dashoffset .4s ease;
+  }
+
+  .node-label {
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    text-align: center;
+  }
+
+  .node-status {
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .thought-bubble {
+    position: absolute;
+    bottom: calc(100% + 12px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 11px;
+    line-height: 1.4;
+    max-width: 200px;
+    box-shadow: var(--shadow-lg);
+    opacity: 0;
+    transition: opacity .3s;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  .thought-bubble.visible { opacity: 1; }
+
+  .thought-bubble::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-top-color: #fff;
+  }
+
+  .thought-bubble::before {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 7px solid transparent;
+    border-top-color: var(--border);
+  }
+
+  .thought-prefix {
+    font-weight: 600;
+    margin-right: 4px;
+  }
+
+  /* ===== CONVERSATION FEED ===== */
+  .feed-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    scroll-behavior: smooth;
+  }
+
+  .feed-scroll::-webkit-scrollbar { width: 4px; }
+  .feed-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .feed-entry {
+    display: flex;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid #f3f4f6;
+    animation: fadeSlideIn .3s ease;
+  }
+
+  @keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .feed-entry:last-child { border-bottom: none; }
+
+  .feed-time {
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    padding-top: 2px;
+    min-width: 48px;
+  }
+
+  .feed-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: #fff;
+    flex-shrink: 0;
+  }
+
+  .feed-body { flex: 1; min-width: 0; }
+
+  .feed-sender {
+    font-size: 12px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .feed-arrow { color: var(--muted); font-weight: 400; }
+
+  .feed-text {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text);
+    margin-top: 2px;
+  }
+
+  .feed-entry.thinking .feed-text {
+    font-style: italic;
+    color: var(--muted);
+  }
+
+  .feed-entry.thinking .feed-icon { opacity: .7; }
+
+  .feed-entry.system {
+    justify-content: center;
+    border-bottom: none;
+    padding: 4px 0;
+  }
+
+  .feed-entry.system .feed-text {
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    background: var(--bg);
+    padding: 4px 12px;
+    border-radius: 10px;
+  }
+
+  .feed-type-tag {
+    font-size: 9px;
+    font-weight: 500;
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+  }
+
+  .tag-think { background: #ede9fe; color: #7c3aed; }
+  .tag-msg { background: #dbeafe; color: #2563eb; }
+  .tag-result { background: #d1fae5; color: #059669; }
+
+  /* ===== SIDEBAR ===== */
+  .sidebar-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+  }
+
+  .sidebar-content::-webkit-scrollbar { width: 4px; }
+  .sidebar-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .task-section { margin-bottom: 20px; }
+  .task-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .task-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 0;
+    font-size: 12px;
+  }
+
+  .task-check {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    flex-shrink: 0;
+    margin-top: 1px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    transition: all .3s;
+  }
+
+  .task-check.done {
+    background: #059669;
+    border-color: #059669;
+    color: #fff;
+  }
+
+  .task-check.active {
+    border-color: var(--primary);
+    background: #eef2ff;
+  }
+
+  .task-name { line-height: 1.4; }
+  .task-agent {
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .agent-detail {
+    background: var(--bg);
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 12px;
+  }
+
+  .agent-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .agent-detail-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    color: #fff;
+  }
+
+  .agent-detail-name {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .agent-detail-role {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .agent-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .agent-stat {
+    background: var(--card);
+    border-radius: 6px;
+    padding: 8px;
+    text-align: center;
+  }
+
+  .agent-stat-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--primary);
+  }
+
+  .agent-stat-label {
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .agent-thought-log {
+    max-height: 160px;
+    overflow-y: auto;
+  }
+
+  .agent-thought-entry {
+    font-size: 11px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+    line-height: 1.4;
+  }
+
+  .agent-thought-entry:last-child { border-bottom: none; }
+  .agent-thought-entry .time { color: var(--muted); margin-right: 4px; }
+
+  .filter-bar {
+    display: flex;
+    gap: 4px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+
+  .filter-btn {
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    cursor: pointer;
+    transition: all .15s;
+    font-weight: 500;
+  }
+
+  .filter-btn:hover { background: var(--bg); }
+  .filter-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+  .empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  @media (max-width: 1100px) {
+    .main { grid-template-columns: 1fr 1fr; }
+    .panel:last-child { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="dashboard">
+  <header>
+    <h1>Agent Orchestration</h1>
+    <div class="header-task">
+      Task: <span id="taskTitle">Build a REST API for user management with authentication and RBAC</span>
+    </div>
+    <div class="overall-progress">
+      <span id="progressPct">0%</span>
+      <div class="overall-bar"><div class="overall-bar-fill" id="progressBar" style="width:0%"></div></div>
+    </div>
+    <div class="controls">
+      <button id="btnPlay" class="active" onclick="togglePlay()">▶</button>
+      <button id="btnPause" onclick="togglePlay()">⏸</button>
+      <span class="speed-label">Speed:</span>
+      <button class="speed-btn" data-speed="1" onclick="setSpeed(1, this)">1x</button>
+      <button class="speed-btn active" data-speed="2" onclick="setSpeed(2, this)">2x</button>
+      <button class="speed-btn" data-speed="5" onclick="setSpeed(5, this)">5x</button>
+      <button id="btnRestart" onclick="restart()">↻</button>
+    </div>
+  </header>
+
+  <div class="main">
+    <!-- Graph Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        Agent Topology
+        <span class="badge" id="agentCount">0 agents</span>
+      </div>
+      <div class="graph-container" id="graphContainer">
+        <svg class="graph-svg" id="graphSvg"></svg>
+      </div>
+    </div>
+
+    <!-- Conversation Feed -->
+    <div class="panel">
+      <div class="panel-header">
+        Live Conversation
+        <span class="badge" id="msgCount">0 messages</span>
+      </div>
+      <div class="filter-bar">
+        <button class="filter-btn active" data-filter="all" onclick="setFilter('all', this)">All</button>
+        <button class="filter-btn" data-filter="thinking" onclick="setFilter('thinking', this)">Thinking</button>
+        <button class="filter-btn" data-filter="message" onclick="setFilter('message', this)">Messages</button>
+        <button class="filter-btn" data-filter="result" onclick="setFilter('result', this)">Results</button>
+      </div>
+      <div class="feed-scroll" id="feedScroll"></div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="panel">
+      <div class="panel-header">Progress & Details</div>
+      <div class="sidebar-content" id="sidebarContent">
+        <div class="task-section">
+          <div class="task-section-title">Task Breakdown</div>
+          <div id="taskList"></div>
+        </div>
+        <div class="task-section">
+          <div class="task-section-title">Agent Details</div>
+          <div id="agentDetail" class="empty-state">Click an agent to see details</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const AGENTS = {
+  master:     { name: 'Master Agent',    icon: '🎯', color: '#4f46e5', role: 'Orchestrator',    x: 50, y: 45 },
+  planner:    { name: 'Planner',         icon: '📐', color: '#7c3aed', role: 'Architecture',    x: 50, y: 10 },
+  researcher: { name: 'Researcher',      icon: '🔍', color: '#2563eb', role: 'Best Practices',  x: 87, y: 30 },
+  coder:      { name: 'Code Writer',     icon: '💻', color: '#059669', role: 'Implementation',  x: 80, y: 75 },
+  reviewer:   { name: 'Reviewer',        icon: '🔎', color: '#d97706', role: 'Quality Assurance',x: 20, y: 75 },
+  tester:     { name: 'Tester',          icon: '🧪', color: '#dc2626', role: 'Testing',         x: 13, y: 30 },
+};
+
+const EDGES = [
+  ['master', 'planner'], ['master', 'researcher'], ['master', 'coder'],
+  ['master', 'reviewer'], ['master', 'tester'],
+  ['planner', 'coder'], ['researcher', 'coder'],
+  ['coder', 'reviewer'], ['reviewer', 'coder'],
+  ['planner', 'researcher'],
+];
+
+const TASKS = [
+  { id: 't1', name: 'Analyze requirements and spawn agents', agent: 'master' },
+  { id: 't2', name: 'Design API architecture', agent: 'planner' },
+  { id: 't3', name: 'Research auth best practices', agent: 'researcher' },
+  { id: 't4', name: 'Implement User model and CRUD routes', agent: 'coder' },
+  { id: 't5', name: 'Implement JWT authentication', agent: 'coder' },
+  { id: 't6', name: 'Code review and feedback', agent: 'reviewer' },
+  { id: 't7', name: 'Write integration tests', agent: 'tester' },
+  { id: 't8', name: 'Final review and completion', agent: 'master' },
+];
+
+const EVENTS = [
+  // Phase 1: Master analyzes and spawns
+  { t: 0,    type: 'system', text: 'Task received by Master Agent' },
+  { t: 800,  type: 'think', agent: 'master', text: 'Parsing the task requirements. This needs authentication, CRUD, and role-based access control. I will need specialized agents.' },
+  { t: 3000, type: 'think', agent: 'master', text: 'Breaking down into sub-tasks: architecture design, auth research, implementation, review, and testing. Spawning 5 agents.' },
+  { t: 4500, type: 'spawn', agent: 'planner' },
+  { t: 5200, type: 'spawn', agent: 'researcher' },
+  { t: 5900, type: 'spawn', agent: 'coder' },
+  { t: 6600, type: 'spawn', agent: 'reviewer' },
+  { t: 7300, type: 'spawn', agent: 'tester' },
+  { t: 7500, type: 'progress', task: 't1', status: 'done', overall: 8 },
+
+  // Phase 2: Planning and research (parallel)
+  { t: 8000,  type: 'msg', from: 'master', to: 'planner', text: 'Design the REST API architecture for a user management system. Include endpoint structure, data models, and middleware layers.' },
+  { t: 8500,  type: 'msg', from: 'master', to: 'researcher', text: 'Research Node.js authentication best practices. Compare JWT vs session-based auth. Include password hashing recommendations.' },
+  { t: 9000,  type: 'progress', task: 't2', status: 'active' },
+  { t: 9000,  type: 'progress', task: 't3', status: 'active' },
+  { t: 9500,  type: 'think', agent: 'planner', text: 'Starting with RESTful conventions. Need endpoints: POST /users, GET /users/:id, PUT /users/:id, DELETE /users/:id, POST /auth/login, POST /auth/register.' },
+  { t: 11000, type: 'think', agent: 'researcher', text: 'Comparing JWT vs session-based authentication. JWT is stateless and works better for microservices. Checking bcrypt vs argon2 for hashing.' },
+  { t: 13000, type: 'think', agent: 'planner', text: 'Defining the data model: User { id, email, password_hash, role, created_at, updated_at }. Roles: admin, manager, user.' },
+  { t: 14000, type: 'msg', from: 'researcher', to: 'planner', text: 'I recommend JWT with refresh tokens. This affects your middleware design: you will need a token verification layer.' },
+  { t: 15000, type: 'think', agent: 'planner', text: 'Good point from Researcher. Adding auth middleware layer: verifyToken, requireRole(roles). Updating architecture to include refresh token endpoint.' },
+  { t: 16500, type: 'msg', from: 'planner', to: 'master', text: 'Architecture ready. 3 modules: Auth (JWT + refresh tokens), Users (CRUD with validation), Middleware (RBAC + token verification). 8 endpoints total.' },
+  { t: 17000, type: 'result', agent: 'planner', text: 'API architecture document completed with endpoint specs, data models, and middleware chain.' },
+  { t: 17000, type: 'progress', task: 't2', status: 'done', overall: 22 },
+  { t: 18000, type: 'msg', from: 'researcher', to: 'master', text: 'Research complete. Recommending: JWT with RS256 signing, bcrypt (cost factor 12) for passwords, helmet for security headers, rate limiting on auth endpoints.' },
+  { t: 18500, type: 'result', agent: 'researcher', text: 'Security best practices report delivered. JWT + bcrypt + helmet + rate limiting.' },
+  { t: 18500, type: 'progress', task: 't3', status: 'done', overall: 35 },
+
+  // Phase 3: Implementation
+  { t: 19500, type: 'msg', from: 'master', to: 'coder', text: 'Start implementing the User model and CRUD routes. Use Planner\'s architecture doc and Researcher\'s security recommendations.' },
+  { t: 19500, type: 'progress', task: 't4', status: 'active' },
+  { t: 20000, type: 'msg', from: 'planner', to: 'coder', text: 'Here\'s the endpoint spec: POST /users (create), GET /users/:id (read), PUT /users/:id (update), DELETE /users/:id (soft delete). All require auth except POST /auth/register.' },
+  { t: 20500, type: 'msg', from: 'researcher', to: 'coder', text: 'Use bcrypt with cost factor 12 for password hashing. Never store plain text. Use parameterized queries to prevent SQL injection.' },
+  { t: 21000, type: 'think', agent: 'coder', text: 'Setting up the User model with TypeScript interfaces. Defining UserCreateDTO and UserResponseDTO to separate input from output.' },
+  { t: 23000, type: 'think', agent: 'coder', text: 'Implementing CRUD routes with Fastify. Using TypeBox for request/response validation schemas. Adding proper error handling for duplicate emails.' },
+  { t: 25000, type: 'think', agent: 'coder', text: 'User CRUD is done. Moving to authentication endpoints. Implementing /auth/register and /auth/login with JWT token generation.' },
+  { t: 25500, type: 'result', agent: 'coder', text: 'User model and CRUD routes implemented: 4 endpoints with validation, error handling, and TypeBox schemas.' },
+  { t: 25500, type: 'progress', task: 't4', status: 'done', overall: 50 },
+
+  { t: 26000, type: 'msg', from: 'master', to: 'coder', text: 'Proceed with JWT authentication implementation. Use the Researcher\'s recommendations for signing algorithm and token expiry.' },
+  { t: 26000, type: 'progress', task: 't5', status: 'active' },
+  { t: 26500, type: 'think', agent: 'coder', text: 'Implementing JWT auth with RS256. Access token expires in 15 min, refresh token in 7 days. Storing refresh tokens in DB for revocation support.' },
+  { t: 28500, type: 'think', agent: 'coder', text: 'Adding RBAC middleware: requireRole accepts an array of allowed roles and checks the JWT payload. Returns 403 if role doesn\'t match.' },
+  { t: 30000, type: 'msg', from: 'coder', to: 'reviewer', text: 'Auth implementation ready for review. JWT with RS256, bcrypt hashing, refresh token rotation, and RBAC middleware. 3 new files, ~280 lines.' },
+  { t: 30000, type: 'progress', task: 't5', status: 'done', overall: 62 },
+
+  // Phase 4: Review
+  { t: 30500, type: 'progress', task: 't6', status: 'active' },
+  { t: 31000, type: 'think', agent: 'reviewer', text: 'Reviewing the auth implementation. Checking for common vulnerabilities: token storage, password handling, error message leakage.' },
+  { t: 33000, type: 'think', agent: 'reviewer', text: 'Found 2 issues: (1) Error messages expose whether an email exists during login, (2) No rate limiting on /auth/login endpoint.' },
+  { t: 34000, type: 'msg', from: 'reviewer', to: 'coder', text: 'Two issues found: 1) Login error reveals email existence (use generic "Invalid credentials" message). 2) Missing rate limiting on auth endpoints. Needs fix before merge.' },
+  { t: 35000, type: 'think', agent: 'coder', text: 'Good catches. Fixing: (1) Unified error message for invalid email/password, (2) Adding @fastify/rate-limit with 5 attempts per minute on auth routes.' },
+  { t: 37000, type: 'msg', from: 'coder', to: 'reviewer', text: 'Both issues fixed. Unified error messages and added rate limiting (5 req/min on /auth/*). Ready for re-review.' },
+  { t: 38000, type: 'think', agent: 'reviewer', text: 'Re-reviewing changes. Error messages are now generic. Rate limiting is properly configured. Code quality is clean. Approving.' },
+  { t: 39000, type: 'msg', from: 'reviewer', to: 'master', text: 'Code review passed. All security concerns addressed. Implementation follows best practices. Approved for testing.' },
+  { t: 39000, type: 'result', agent: 'reviewer', text: 'Code review completed. 2 issues found and resolved. Final approval granted.' },
+  { t: 39000, type: 'progress', task: 't6', status: 'done', overall: 75 },
+
+  // Phase 5: Testing
+  { t: 40000, type: 'msg', from: 'master', to: 'tester', text: 'Run integration tests for all endpoints. Cover: user CRUD, authentication flow, token refresh, RBAC, edge cases (duplicate email, invalid token, expired token).' },
+  { t: 40000, type: 'progress', task: 't7', status: 'active' },
+  { t: 41000, type: 'think', agent: 'tester', text: 'Setting up test environment with in-memory database. Writing test suites: UserCRUD (6 tests), Auth (8 tests), RBAC (4 tests).' },
+  { t: 43000, type: 'think', agent: 'tester', text: 'Running 18 integration tests... UserCRUD: 6/6 passed. Auth: 7/8 (one flaky timeout). RBAC: 4/4 passed.' },
+  { t: 44000, type: 'msg', from: 'tester', to: 'coder', text: 'Found a flaky test: "token refresh" times out intermittently. The refresh endpoint takes >2s when DB is cold. Can you add connection warm-up?' },
+  { t: 45000, type: 'think', agent: 'coder', text: 'The test timeout issue is from the DB connection pool. Adding a warm-up query on server start and increasing the test timeout to 5s as a safety margin.' },
+  { t: 46000, type: 'msg', from: 'coder', to: 'tester', text: 'Fixed: Added DB connection warm-up on startup. Re-run the test suite.' },
+  { t: 47000, type: 'think', agent: 'tester', text: 'Re-running all 18 tests... All passing. 18/18 green. Average response time: 45ms. Coverage: 94%.' },
+  { t: 48000, type: 'msg', from: 'tester', to: 'master', text: 'All 18 integration tests passing. 94% code coverage. No flaky tests remaining. Performance is within acceptable limits (avg 45ms response).' },
+  { t: 48000, type: 'result', agent: 'tester', text: 'Test suite complete: 18/18 passed, 94% coverage, avg 45ms response time.' },
+  { t: 48000, type: 'progress', task: 't7', status: 'done', overall: 90 },
+
+  // Phase 6: Completion
+  { t: 49000, type: 'progress', task: 't8', status: 'active' },
+  { t: 49500, type: 'think', agent: 'master', text: 'All sub-tasks completed. Compiling the final report: architecture, implementation, review results, and test coverage.' },
+  { t: 51000, type: 'result', agent: 'master', text: 'Task complete. REST API with JWT auth, CRUD, and RBAC delivered. 18 tests passing, 94% coverage, all security reviews passed.' },
+  { t: 51000, type: 'progress', task: 't8', status: 'done', overall: 100 },
+  { t: 51500, type: 'system', text: 'All tasks completed successfully.' },
+];
+
+// ── State ──
+let state = {
+  playing: true,
+  speed: 2,
+  elapsed: 0,
+  lastTick: null,
+  eventIdx: 0,
+  spawnedAgents: new Set(['master']),
+  agentStatus: {},
+  agentThoughts: {},
+  agentMsgCount: {},
+  taskStatus: {},
+  overall: 0,
+  feedEntries: [],
+  selectedAgent: null,
+  filter: 'all',
+  msgTotal: 0,
+};
+
+function resetState() {
+  state = {
+    playing: true, speed: state.speed, elapsed: 0, lastTick: null, eventIdx: 0,
+    spawnedAgents: new Set(['master']), agentStatus: { master: 'working' },
+    agentThoughts: {}, agentMsgCount: {}, taskStatus: {}, overall: 0,
+    feedEntries: [], selectedAgent: null, filter: state.filter, msgTotal: 0,
+  };
+}
+
+// ── Rendering ──
+function getPos(agentId) {
+  const a = AGENTS[agentId];
+  const container = document.getElementById('graphContainer');
+  return { x: (a.x / 100) * container.offsetWidth, y: (a.y / 100) * container.offsetHeight };
+}
+
+function renderGraph() {
+  const container = document.getElementById('graphContainer');
+  const svg = document.getElementById('graphSvg');
+  svg.innerHTML = '';
+
+  EDGES.forEach(([a, b]) => {
+    if (!state.spawnedAgents.has(a) || !state.spawnedAgents.has(b)) return;
+    const p1 = getPos(a), p2 = getPos(b);
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', p1.x); line.setAttribute('y1', p1.y);
+    line.setAttribute('x2', p2.x); line.setAttribute('y2', p2.y);
+    line.setAttribute('class', 'edge');
+    line.id = `edge-${a}-${b}`;
+    svg.appendChild(line);
+  });
+
+  container.querySelectorAll('.agent-node').forEach(n => n.remove());
+
+  state.spawnedAgents.forEach(id => {
+    const a = AGENTS[id];
+    const pos = getPos(id);
+    const node = document.createElement('div');
+    node.className = 'agent-node' + (state.selectedAgent === id ? ' selected' : '');
+    node.style.left = pos.x + 'px';
+    node.style.top = pos.y + 'px';
+    node.onclick = () => selectAgent(id);
+
+    const status = state.agentStatus[id] || 'idle';
+    const statusColors = { idle: '#9ca3af', working: a.color, thinking: a.color, done: '#059669', waiting: '#f59e0b' };
+    const circleSize = id === 'master' ? 56 : 48;
+    const circumference = (circleSize / 2 + 4) * 2 * Math.PI;
+    const progress = (state.agentMsgCount[id] || 0) / 10;
+
+    node.innerHTML = `
+      <div class="node-circle ${id === 'master' ? 'master' : ''}" style="background:${a.color}">
+        ${a.icon}
+        <div class="node-ring ${status === 'working' || status === 'thinking' ? 'spinning' : ''}" style="color:${a.color}"></div>
+        <svg class="progress-ring" viewBox="0 0 ${circleSize + 8} ${circleSize + 8}">
+          <circle cx="${(circleSize + 8) / 2}" cy="${(circleSize + 8) / 2}" r="${circleSize / 2 + 1}"
+            stroke="${a.color}22" stroke-dasharray="${circumference}" stroke-dashoffset="0"/>
+          <circle cx="${(circleSize + 8) / 2}" cy="${(circleSize + 8) / 2}" r="${circleSize / 2 + 1}"
+            stroke="${a.color}" stroke-dasharray="${circumference}"
+            stroke-dashoffset="${circumference * (1 - Math.min(progress, 1))}"/>
+        </svg>
+      </div>
+      <div class="node-label" style="color:${a.color}">${a.name}</div>
+      <div class="node-status">${statusLabel(status)}</div>
+      <div class="thought-bubble" id="thought-${id}"></div>
+    `;
+    container.appendChild(node);
+  });
+
+  document.getElementById('agentCount').textContent = state.spawnedAgents.size + ' agents';
+}
+
+function statusLabel(s) {
+  return { idle: 'Idle', working: 'Working', thinking: '💭 Thinking...', done: '✓ Complete', waiting: '⏳ Waiting' }[s] || s;
+}
+
+function showThought(agentId, text) {
+  state.agentStatus[agentId] = 'thinking';
+  if (!state.agentThoughts[agentId]) state.agentThoughts[agentId] = [];
+  state.agentThoughts[agentId].push({ time: formatTime(state.elapsed), text });
+
+  renderGraph();
+
+  const bubble = document.getElementById(`thought-${agentId}`);
+  if (bubble) {
+    bubble.innerHTML = `<span class="thought-prefix">💭</span>${text}`;
+    bubble.classList.add('visible');
+    setTimeout(() => {
+      bubble.classList.remove('visible');
+      if (state.agentStatus[agentId] === 'thinking') state.agentStatus[agentId] = 'working';
+      renderGraph();
+    }, 3500 / state.speed);
+  }
+}
+
+function animateMessage(fromId, toId) {
+  const svg = document.getElementById('graphSvg');
+  const p1 = getPos(fromId), p2 = getPos(toId);
+  const color = AGENTS[fromId].color;
+
+  const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  circle.setAttribute('cx', p1.x); circle.setAttribute('cy', p1.y);
+  circle.setAttribute('r', 5); circle.setAttribute('fill', color);
+  circle.style.filter = `drop-shadow(0 0 4px ${color})`;
+  svg.appendChild(circle);
+
+  const edgeKey1 = `edge-${fromId}-${toId}`;
+  const edgeKey2 = `edge-${toId}-${fromId}`;
+  const edge = document.getElementById(edgeKey1) || document.getElementById(edgeKey2);
+  if (edge) { edge.setAttribute('stroke', color); edge.setAttribute('stroke-width', '2.5'); }
+
+  const duration = 600 / state.speed;
+  const start = performance.now();
+  function step(now) {
+    const pct = Math.min((now - start) / duration, 1);
+    const ease = pct < 0.5 ? 2 * pct * pct : -1 + (4 - 2 * pct) * pct;
+    circle.setAttribute('cx', p1.x + (p2.x - p1.x) * ease);
+    circle.setAttribute('cy', p1.y + (p2.y - p1.y) * ease);
+    circle.setAttribute('opacity', pct < 0.8 ? 1 : 1 - (pct - 0.8) / 0.2);
+    if (pct < 1) requestAnimationFrame(step);
+    else {
+      circle.remove();
+      if (edge) { edge.setAttribute('stroke', '#e5e7eb'); edge.setAttribute('stroke-width', '1.5'); }
+    }
+  }
+  requestAnimationFrame(step);
+}
+
+function addFeedEntry(entry) {
+  state.feedEntries.push(entry);
+  state.msgTotal++;
+  renderFeed();
+}
+
+function renderFeed() {
+  const container = document.getElementById('feedScroll');
+  const filtered = state.feedEntries.filter(e => {
+    if (state.filter === 'all') return true;
+    if (state.filter === 'thinking') return e.type === 'think';
+    if (state.filter === 'message') return e.type === 'msg';
+    if (state.filter === 'result') return e.type === 'result' || e.type === 'system';
+    return true;
+  });
+
+  container.innerHTML = filtered.map(e => {
+    if (e.type === 'system') {
+      return `<div class="feed-entry system"><div class="feed-body"><div class="feed-text">${e.text}</div></div></div>`;
+    }
+
+    const agent = AGENTS[e.agent || e.from];
+    const typeClass = e.type === 'think' ? 'thinking' : '';
+    const tagClass = e.type === 'think' ? 'tag-think' : e.type === 'result' ? 'tag-result' : 'tag-msg';
+    const tagLabel = e.type === 'think' ? 'thinking' : e.type === 'result' ? 'result' : 'message';
+
+    let senderHtml = `<span style="color:${agent.color}">${agent.name}</span>`;
+    if (e.to) {
+      const target = AGENTS[e.to];
+      senderHtml += ` <span class="feed-arrow">→</span> <span style="color:${target.color}">${target.name}</span>`;
+    }
+
+    return `
+      <div class="feed-entry ${typeClass}">
+        <div class="feed-time">${e.time}</div>
+        <div class="feed-icon" style="background:${agent.color}">${agent.icon}</div>
+        <div class="feed-body">
+          <div class="feed-sender">${senderHtml} <span class="feed-type-tag ${tagClass}">${tagLabel}</span></div>
+          <div class="feed-text">${e.text}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  container.scrollTop = container.scrollHeight;
+  document.getElementById('msgCount').textContent = state.msgTotal + ' messages';
+}
+
+function renderTasks() {
+  const container = document.getElementById('taskList');
+  container.innerHTML = TASKS.map(t => {
+    const status = state.taskStatus[t.id] || 'pending';
+    const checkClass = status === 'done' ? 'done' : status === 'active' ? 'active' : '';
+    const checkIcon = status === 'done' ? '✓' : status === 'active' ? '●' : '';
+    const agent = AGENTS[t.agent];
+    return `
+      <div class="task-item">
+        <div class="task-check ${checkClass}">${checkIcon}</div>
+        <div>
+          <div class="task-name">${t.name}</div>
+          <div class="task-agent" style="color:${agent.color}">${agent.icon} ${agent.name}</div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function renderProgress() {
+  document.getElementById('progressPct').textContent = state.overall + '%';
+  document.getElementById('progressBar').style.width = state.overall + '%';
+}
+
+function selectAgent(id) {
+  state.selectedAgent = id;
+  renderGraph();
+  renderAgentDetail();
+}
+
+function renderAgentDetail() {
+  const container = document.getElementById('agentDetail');
+  const id = state.selectedAgent;
+  if (!id) { container.innerHTML = '<div class="empty-state">Click an agent to see details</div>'; return; }
+
+  const a = AGENTS[id];
+  const thoughts = state.agentThoughts[id] || [];
+  const msgs = state.agentMsgCount[id] || 0;
+  const status = state.agentStatus[id] || 'idle';
+
+  container.innerHTML = `
+    <div class="agent-detail">
+      <div class="agent-detail-header">
+        <div class="agent-detail-icon" style="background:${a.color}">${a.icon}</div>
+        <div>
+          <div class="agent-detail-name">${a.name}</div>
+          <div class="agent-detail-role">${a.role} · ${statusLabel(status)}</div>
+        </div>
+      </div>
+      <div class="agent-stats">
+        <div class="agent-stat">
+          <div class="agent-stat-value" style="color:${a.color}">${msgs}</div>
+          <div class="agent-stat-label">Messages</div>
+        </div>
+        <div class="agent-stat">
+          <div class="agent-stat-value" style="color:${a.color}">${thoughts.length}</div>
+          <div class="agent-stat-label">Thoughts</div>
+        </div>
+      </div>
+      <div class="task-section-title">Thought Log</div>
+      <div class="agent-thought-log">
+        ${thoughts.length === 0 ? '<div style="font-size:11px;color:var(--muted)">No thoughts recorded yet</div>' :
+          thoughts.map(t => `<div class="agent-thought-entry"><span class="time">${t.time}</span>${t.text}</div>`).join('')}
+      </div>
+    </div>`;
+}
+
+function formatTime(ms) {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// ── Event Processing ──
+function processEvent(ev) {
+  const time = formatTime(state.elapsed);
+
+  switch (ev.type) {
+    case 'system':
+      addFeedEntry({ type: 'system', text: ev.text, time });
+      break;
+
+    case 'think':
+      showThought(ev.agent, ev.text);
+      addFeedEntry({ type: 'think', agent: ev.agent, text: ev.text, time });
+      break;
+
+    case 'spawn':
+      state.spawnedAgents.add(ev.agent);
+      state.agentStatus[ev.agent] = 'idle';
+      state.agentMsgCount[ev.agent] = 0;
+      addFeedEntry({ type: 'system', text: `${AGENTS[ev.agent].icon} ${AGENTS[ev.agent].name} spawned`, time });
+      renderGraph();
+      break;
+
+    case 'msg':
+      state.agentStatus[ev.from] = 'working';
+      state.agentStatus[ev.to] = 'working';
+      state.agentMsgCount[ev.from] = (state.agentMsgCount[ev.from] || 0) + 1;
+      state.agentMsgCount[ev.to] = (state.agentMsgCount[ev.to] || 0) + 1;
+      animateMessage(ev.from, ev.to);
+      addFeedEntry({ type: 'msg', from: ev.from, to: ev.to, agent: ev.from, text: ev.text, time });
+      renderGraph();
+      break;
+
+    case 'result':
+      state.agentStatus[ev.agent] = 'done';
+      addFeedEntry({ type: 'result', agent: ev.agent, text: ev.text, time });
+      renderGraph();
+      break;
+
+    case 'progress':
+      if (ev.task) state.taskStatus[ev.task] = ev.status;
+      if (ev.overall !== undefined) state.overall = ev.overall;
+      renderTasks();
+      renderProgress();
+      break;
+  }
+
+  if (state.selectedAgent) renderAgentDetail();
+}
+
+// ── Main Loop ──
+function tick(now) {
+  if (!state.playing) { state.lastTick = null; requestAnimationFrame(tick); return; }
+  if (!state.lastTick) state.lastTick = now;
+
+  const delta = (now - state.lastTick) * state.speed;
+  state.elapsed += delta;
+  state.lastTick = now;
+
+  while (state.eventIdx < EVENTS.length && EVENTS[state.eventIdx].t <= state.elapsed) {
+    processEvent(EVENTS[state.eventIdx]);
+    state.eventIdx++;
+  }
+
+  requestAnimationFrame(tick);
+}
+
+// ── Controls ──
+function togglePlay() {
+  state.playing = !state.playing;
+  state.lastTick = null;
+  document.getElementById('btnPlay').classList.toggle('active', state.playing);
+  document.getElementById('btnPause').classList.toggle('active', !state.playing);
+}
+
+function setSpeed(s, btn) {
+  state.speed = s;
+  state.lastTick = null;
+  document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function setFilter(f, btn) {
+  state.filter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderFeed();
+}
+
+function restart() {
+  resetState();
+  document.getElementById('feedScroll').innerHTML = '';
+  renderGraph();
+  renderTasks();
+  renderProgress();
+  renderAgentDetail();
+  state.lastTick = null;
+}
+
+// ── Init ──
+function init() {
+  renderGraph();
+  renderTasks();
+  renderProgress();
+  requestAnimationFrame(tick);
+
+  window.addEventListener('resize', () => renderGraph());
+}
+
+init();
+</script>
+</body>
+</html>

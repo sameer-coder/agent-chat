@@ -3,6 +3,7 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { existsSync } from 'fs';
 import { createMasterHandler } from './src/agents/index.js';
 import { exaSearch, isSearchConfigured } from './src/agents/searchService.js';
 import { getApiKey, setApiKey, hasApiKey, hasProviderAccess, isLocalProviderBaseUrl, getConfig, updateConfig, getProviderConfig, getProviderConfigRaw, saveProviderConfig, loadApiKeyForProvider, loadModelForProvider, loadRecentModelsForProvider, getSearchConfig, updateSearchConfig } from './src/utils/config.js';
@@ -34,9 +35,14 @@ function isFreeOpenRouterModel(model) {
   return prices.length > 0 && prices.every((price) => price === 0);
 }
 
+// Serve the React build (client/dist) if it exists, otherwise fall back to public/
+const clientDistPath = join(__dirname, 'client', 'dist');
+const publicPath = join(__dirname, 'public');
+const staticRoot = existsSync(clientDistPath) ? clientDistPath : publicPath;
+
 // Register plugins
 await fastify.register(fastifyStatic, {
-  root: join(__dirname, 'public'),
+  root: staticRoot,
   prefix: '/'
 });
 
@@ -252,12 +258,12 @@ fastify.post('/api/test', async (request, reply) => {
       apiKey: suppliedApiKey ? suppliedApiKey.substring(0, 10) + '...' : '(none - local provider)'
     });
     
-    // Try to create a simple chat completion
+    // Try to create a simple chat completion (cap at 20 tokens for speed)
     const { chat } = await import('./src/agents/openaiService.js');
     const result = await chat([
       { role: 'system', content: 'Reply with exactly: "Connection successful!"' },
       { role: 'user', content: 'Hello' }
-    ]);
+    ], 20);
     
     console.log('Connection test result:', result);
     
@@ -431,7 +437,10 @@ async function handleTask(task, socket) {
   
   try {
     const result = await masterHandler.processTask(task, (message) => {
-      // Broadcast once to all clients (including the requester) to avoid duplicates
+      // Don't broadcast further messages once the user has requested a stop.
+      // Sub-agents running in parallel may still fire callbacks between the
+      // stop signal and their next isStopped() check — silently drop those.
+      if (masterHandler.stopped) return;
       broadcast(message);
     });
     
