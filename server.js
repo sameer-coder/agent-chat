@@ -6,7 +6,7 @@ import { dirname, join } from 'path';
 import { existsSync } from 'fs';
 import { createMasterHandler } from './src/agents/index.js';
 import { exaSearch, isSearchConfigured } from './src/agents/searchService.js';
-import { getApiKey, setApiKey, hasApiKey, hasProviderAccess, isLocalProviderBaseUrl, getConfig, updateConfig, getProviderConfig, getProviderConfigRaw, saveProviderConfig, loadApiKeyForProvider, loadModelForProvider, loadRecentModelsForProvider, getSearchConfig, updateSearchConfig } from './src/utils/config.js';
+import { getApiKey, setApiKey, hasApiKey, hasProviderAccess, isLocalProviderBaseUrl, getConfig, updateConfig, getProviderConfig, getProviderConfigRaw, saveProviderConfig, loadApiKeyForProvider, loadModelForProvider, loadRecentModelsForProvider, getSystemPrompt, setSystemPrompt, getSearchConfig, updateSearchConfig } from './src/utils/config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -352,6 +352,20 @@ fastify.post('/api/search/config', async (request, reply) => {
   return { success: true };
 });
 
+// ─── System prompt routes ───
+
+// Get saved system prompt
+fastify.get('/api/system-prompt', async (request, reply) => {
+  return { systemPrompt: getSystemPrompt() };
+});
+
+// Save system prompt
+fastify.post('/api/system-prompt', async (request, reply) => {
+  const { systemPrompt } = request.body;
+  setSystemPrompt(systemPrompt || '');
+  return { success: true };
+});
+
 // Test search — run a quick query to verify the key works
 fastify.post('/api/search/test', async (request, reply) => {
   try {
@@ -424,8 +438,9 @@ async function handleTask(task, socket) {
     return;
   }
   
-  // Create a new Master Handler for this task
-  const masterHandler = createMasterHandler();
+  // Create a new Master Handler for this task, with optional custom system prompt
+  const customSystemPrompt = getSystemPrompt();
+  const masterHandler = createMasterHandler(customSystemPrompt || undefined);
   activeHandlers.set(socket, masterHandler);
   
   // Send task received confirmation

@@ -350,6 +350,26 @@ function handleMessage(data, dispatch) {
         totalTokens: data.totalTokens || 0,
         model: data.model || '',
       });
+      dispatch({
+        type: ActionTypes.CORRELATE_SNAPSHOT_TOKENS,
+        promptTokens: data.promptTokens || 0,
+        model: data.model || '',
+      });
+      break;
+
+    case 'context-snapshot':
+      dispatch({
+        type: ActionTypes.ADD_CONTEXT_SNAPSHOT,
+        snapshot: {
+          callId: data.callId,
+          agentLabel: data.agentLabel,
+          timestamp: data.timestamp,
+          model: data.model,
+          sections: data.sections,
+          totalEstimatedTokens: data.totalEstimatedTokens,
+          messages: data.messages || [],
+        },
+      });
       break;
   }
 }

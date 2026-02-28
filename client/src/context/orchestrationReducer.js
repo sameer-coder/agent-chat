@@ -69,6 +69,9 @@ export const initialState = {
     estimatedCost: 0,
     callCount: 0,
   },
+
+  // Context window snapshots (one per LLM call)
+  contextSnapshots: [], // [{ callId, agentLabel, timestamp, model, sections, totalEstimatedTokens, actualPromptTokens? }]
 };
 
 /**
@@ -181,6 +184,10 @@ export const ActionTypes = {
 
   // Token usage
   UPDATE_TOKEN_USAGE: 'UPDATE_TOKEN_USAGE',
+
+  // Context window inspector
+  ADD_CONTEXT_SNAPSHOT: 'ADD_CONTEXT_SNAPSHOT',
+  CORRELATE_SNAPSHOT_TOKENS: 'CORRELATE_SNAPSHOT_TOKENS',
 };
 
 let messageIdCounter = 0;
@@ -205,6 +212,8 @@ const ALWAYS_ALLOWED = new Set([
   ActionTypes.REMOVE_ACTIVE_EDGE,
   ActionTypes.CLEAR_ACTIVE_EDGES,
   ActionTypes.UPDATE_TOKEN_USAGE,
+  ActionTypes.ADD_CONTEXT_SNAPSHOT,
+  ActionTypes.CORRELATE_SNAPSHOT_TOKENS,
   // Terminal events that transition isProcessing → false
   ActionTypes.TASK_COMPLETE,
   ActionTypes.TASK_STOPPED,
@@ -251,6 +260,7 @@ export function orchestrationReducer(state, action) {
         selectedAgent: null,
         activeEdges: [],
         tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0, callCount: 0 },
+        contextSnapshots: [],
       };
 
     case ActionTypes.SET_AGENT_NAMES:
@@ -440,6 +450,25 @@ export function orchestrationReducer(state, action) {
           callCount: prev.callCount + 1,
         },
       };
+    }
+
+    case ActionTypes.ADD_CONTEXT_SNAPSHOT: {
+      const snapshots = [...state.contextSnapshots, action.snapshot];
+      // Cap at 200 snapshots to prevent unbounded memory growth
+      if (snapshots.length > 200) snapshots.shift();
+      return { ...state, contextSnapshots: snapshots };
+    }
+
+    case ActionTypes.CORRELATE_SNAPSHOT_TOKENS: {
+      // Attach actual prompt token count to the most recent unmatched snapshot
+      const snapshots = [...state.contextSnapshots];
+      for (let i = snapshots.length - 1; i >= 0; i--) {
+        if (snapshots[i].actualPromptTokens === undefined) {
+          snapshots[i] = { ...snapshots[i], actualPromptTokens: action.promptTokens, model: action.model || snapshots[i].model };
+          break;
+        }
+      }
+      return { ...state, contextSnapshots: snapshots };
     }
 
     default:

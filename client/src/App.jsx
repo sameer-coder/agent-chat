@@ -8,6 +8,7 @@ import AgentTopology from './components/AgentTopology.jsx';
 import ConversationFeed from './components/ConversationFeed.jsx';
 import ProgressSidebar from './components/ProgressSidebar.jsx';
 import SettingsModal from './components/SettingsModal.jsx';
+import ContextWindowInspector, { InspectorBody } from './components/ContextWindowInspector.jsx';
 
 /* Default column widths as percentages (must sum to 100) */
 const DEFAULT_WIDTHS = [20, 52, 28]; // left (topology), center (conversation), right (progress)
@@ -46,6 +47,9 @@ export default function App() {
   const { sendTask, stopTask } = useWebSocket();
   const { progress, isProcessing } = useOrchestration();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorDocked, setInspectorDocked] = useState(false);
+  const [rightPanelTab, setRightPanelTab] = useState('progress'); // 'progress' | 'context'
   const prevProgressRef = useRef(0);
 
   /* 🎉 Confetti burst when task completes (progress jumps to 100) */
@@ -159,10 +163,29 @@ export default function App() {
 
   const isMaximized = maximized !== null;
 
+  /* Inspector dock / undock handlers */
+  const handleDock = useCallback(() => {
+    setInspectorOpen(false);
+    setInspectorDocked(true);
+    setRightPanelTab('context');
+  }, []);
+
+  const handleUndock = useCallback(() => {
+    setInspectorDocked(false);
+    setRightPanelTab('progress');
+    setInspectorOpen(true);
+  }, []);
+
   return (
     <div className="h-screen flex flex-col bg-gray-100 overflow-hidden">
       {/* Header */}
-      <Header onOpenSettings={() => setSettingsOpen(true)} />
+      <Header onOpenSettings={() => setSettingsOpen(true)} onOpenInspector={() => {
+        if (inspectorDocked) {
+          setRightPanelTab('context');
+        } else {
+          setInspectorOpen(true);
+        }
+      }} />
 
       {/* Main 3-panel layout */}
       <div ref={containerRef} className="flex-1 flex p-3 gap-0 overflow-hidden">
@@ -207,20 +230,72 @@ export default function App() {
           </div>
         )}
 
-        {/* Right: Progress Sidebar */}
+        {/* Right: Progress Sidebar (or tabbed panel when inspector is docked) */}
         <div
           className={`panel-col ${isMaximized && maximized !== 2 ? 'panel-hidden' : ''} ${maximized === 2 ? 'panel-maximized' : ''}`}
           style={!isMaximized ? { width: `${widths[2]}%` } : undefined}
         >
           <div className="panel-inner">
             <MaximizeBtn isMaximized={maximized === 2} onClick={() => toggleMaximize(2)} />
-            <ProgressSidebar />
+            {inspectorDocked ? (
+              /* Tabbed right panel */
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col overflow-hidden h-full">
+                {/* Tab bar */}
+                <div className="flex items-center border-b border-gray-200 shrink-0">
+                  <button
+                    onClick={() => setRightPanelTab('progress')}
+                    className={`flex-1 text-xs font-semibold py-2.5 text-center border-b-2 transition-colors ${
+                      rightPanelTab === 'progress'
+                        ? 'border-teal-500 text-teal-700 bg-teal-50/50'
+                        : 'border-transparent text-gray-400 hover:text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    Progress
+                  </button>
+                  <button
+                    onClick={() => setRightPanelTab('context')}
+                    className={`flex-1 text-xs font-semibold py-2.5 text-center border-b-2 transition-colors ${
+                      rightPanelTab === 'context'
+                        ? 'border-indigo-500 text-indigo-700 bg-indigo-50/50'
+                        : 'border-transparent text-gray-400 hover:text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    Context Inspector
+                  </button>
+                  {/* Undock button */}
+                  <button
+                    onClick={handleUndock}
+                    className="px-2 py-1.5 mr-1 rounded-md hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+                    title="Undock to overlay drawer"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3" />
+                    </svg>
+                  </button>
+                </div>
+                {/* Tab content */}
+                <div className="flex-1 overflow-hidden flex flex-col" style={{ display: rightPanelTab === 'progress' ? 'flex' : 'none' }}>
+                  <div className="flex-1 overflow-y-auto p-3">
+                    <ProgressSidebar embedded />
+                  </div>
+                </div>
+                <div className="flex-1 overflow-hidden flex flex-col" style={{ display: rightPanelTab === 'context' ? 'flex' : 'none' }}>
+                  <InspectorBody />
+                </div>
+              </div>
+            ) : (
+              <ProgressSidebar />
+            )}
           </div>
         </div>
       </div>
 
       {/* Settings Modal */}
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      {/* Context Window Inspector (drawer mode, only when not docked) */}
+      <ContextWindowInspector open={inspectorOpen && !inspectorDocked} onClose={() => setInspectorOpen(false)} onDock={handleDock} />
     </div>
   );
 }

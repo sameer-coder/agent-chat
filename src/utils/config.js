@@ -451,6 +451,27 @@ export function loadRecentModelsForProvider(baseUrl) {
   return provider && Array.isArray(provider.recentModels) ? provider.recentModels : [];
 }
 
+// ─── System prompt helpers ───
+
+/**
+ * Get the custom system prompt from persisted config.
+ * @returns {string} The system prompt or empty string if not set
+ */
+export function getSystemPrompt() {
+  const data = readConfigFile();
+  return data.systemPrompt || '';
+}
+
+/**
+ * Save a custom system prompt to the persisted config.
+ * @param {string} prompt - The system prompt text
+ */
+export function setSystemPrompt(prompt) {
+  const data = readConfigFile();
+  data.systemPrompt = (prompt || '').trim();
+  writeConfigFile(data);
+}
+
 // ─── Search config helpers ───
 
 /**
@@ -491,6 +512,8 @@ export default {
   loadModelForProvider,
   loadRecentModelsForProvider,
   listProviders,
+  getSystemPrompt,
+  setSystemPrompt,
   getSearchConfig,
   updateSearchConfig
 };
