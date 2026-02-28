@@ -103,14 +103,25 @@ function getAgentNames(count) {
 }
 
 export class MasterHandler {
-  constructor() {
+  /**
+   * @param {string} [customSystemPrompt] - Optional user-defined system prompt.
+   *   When provided it is prepended to the built-in orchestration prompt so the
+   *   model sees the user's instructions first while retaining all orchestration
+   *   capabilities.
+   */
+  constructor(customSystemPrompt) {
     this.name = 'Master Handler';
     this.agentId = 'master-handler';
     this.agentNames = {};
     this.subAgents = [];
     this.agentCount = 0;
+
+    const effectiveSystemPrompt = customSystemPrompt
+      ? `${customSystemPrompt.trim()}\n\n---\n\n${MASTER_HANDLER_SYSTEM_PROMPT}`
+      : MASTER_HANDLER_SYSTEM_PROMPT;
+
     this.conversationHistory = [
-      { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT }
+      { role: 'system', content: effectiveSystemPrompt }
     ];
     this.subTasks = {};
     this.subTaskResults = {};
@@ -766,8 +777,8 @@ Only request follow-ups for genuinely important gaps. Minor stylistic issues do 
   }
 }
 
-export function createMasterHandler() {
-  return new MasterHandler();
+export function createMasterHandler(customSystemPrompt) {
+  return new MasterHandler(customSystemPrompt);
 }
 
 export default {
