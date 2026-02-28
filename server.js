@@ -4,7 +4,8 @@ import fastifyWebsocket from '@fastify/websocket';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { createMasterHandler } from './src/agents/index.js';
-import { getApiKey, setApiKey, hasApiKey, getConfig, updateConfig, getProviderConfig, getProviderConfigRaw, saveProviderConfig, loadApiKeyForProvider, loadModelForProvider, loadRecentModelsForProvider } from './src/utils/config.js';
+import { exaSearch, isSearchConfigured } from './src/agents/searchService.js';
+import { getApiKey, setApiKey, hasApiKey, hasProviderAccess, isLocalProviderBaseUrl, getConfig, updateConfig, getProviderConfig, getProviderConfigRaw, saveProviderConfig, loadApiKeyForProvider, loadModelForProvider, loadRecentModelsForProvider, getSearchConfig, updateSearchConfig } from './src/utils/config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -44,12 +45,15 @@ await fastify.register(fastifyWebsocket);
 // Track connected clients
 const clients = new Set();
 
+// Map each socket to its currently-running MasterHandler so we can stop it
+const activeHandlers = new Map();
+
 // Health check endpoint
 fastify.get('/api/health', async (request, reply) => {
   const config = getConfig();
   return { 
     status: 'ok', 
-    apiConfigured: hasApiKey(),
+    apiConfigured: hasProviderAccess(),
     baseUrl: config.baseUrl,
     model: config.model,
     configSource: process.env.CONFIG_JSON ? 'CONFIG_JSON env var' : 'disk file'
@@ -59,14 +63,16 @@ fastify.get('/api/health', async (request, reply) => {
 // API configuration endpoint
 fastify.post('/api/config', async (request, reply) => {
   const { apiKey, baseUrl, model } = request.body;
+  const resolvedBaseUrl = (baseUrl || 'https://api.openai.com/v1').trim();
+  const isLocalProvider = isLocalProviderBaseUrl(resolvedBaseUrl);
   
-  if (!apiKey || typeof apiKey !== 'string') {
+  if (!isLocalProvider && (!apiKey || typeof apiKey !== 'string')) {
     return reply.status(400).send({ error: 'API key is required' });
   }
   
   updateConfig({
-    apiKey,
-    baseUrl,
+    apiKey: typeof apiKey === 'string' ? apiKey : '',
+    baseUrl: resolvedBaseUrl,
     model
   });
   
@@ -222,25 +228,29 @@ fastify.get('/api/askcodi/models', async (request, reply) => {
 // Test API connection endpoint
 fastify.post('/api/test', async (request, reply) => {
   const { apiKey, baseUrl, model } = request.body;
+  const resolvedBaseUrl = (baseUrl || 'https://api.openai.com/v1').trim();
+  const isLocalProvider = isLocalProviderBaseUrl(resolvedBaseUrl);
+  const suppliedApiKey = typeof apiKey === 'string' ? apiKey : '';
+  const originalConfig = getConfig();
+  const originalKey = getApiKey();
   
-  if (!apiKey || typeof apiKey !== 'string') {
+  if (!isLocalProvider && !suppliedApiKey) {
     return reply.status(400).send({ error: 'API key is required' });
   }
   
   try {
-    // Temporarily update config to test
-    const originalKey = getApiKey();
-    const originalUrl = getConfig().baseUrl;
-    const originalModel = getConfig().model;
-    
     // Force reset the client to ensure new config is used
     const { resetClient } = await import('./src/agents/openaiService.js');
     resetClient();
     
-    setApiKey(apiKey);
-    updateConfig({ baseUrl, model });
+    setApiKey(suppliedApiKey);
+    updateConfig({ baseUrl: resolvedBaseUrl, model });
     
-    console.log('Testing connection with:', { baseUrl, model, apiKey: apiKey.substring(0, 10) + '...' });
+    console.log('Testing connection with:', {
+      baseUrl: resolvedBaseUrl,
+      model,
+      apiKey: suppliedApiKey ? suppliedApiKey.substring(0, 10) + '...' : '(none - local provider)'
+    });
     
     // Try to create a simple chat completion
     const { chat } = await import('./src/agents/openaiService.js');
@@ -253,7 +263,7 @@ fastify.post('/api/test', async (request, reply) => {
     
     // Restore original config
     setApiKey(originalKey);
-    updateConfig({ baseUrl: originalUrl, model: originalModel });
+    updateConfig({ baseUrl: originalConfig.baseUrl, model: originalConfig.model });
     
     return { success: true, message: 'Connection successful!', response: result };
   } catch (error) {
@@ -290,11 +300,8 @@ fastify.post('/api/test', async (request, reply) => {
     
     // Restore original config on error too
     try {
-      const originalKey = getApiKey();
-      const originalUrl = getConfig().baseUrl;
-      const originalModel = getConfig().model;
       setApiKey(originalKey);
-      updateConfig({ baseUrl: originalUrl, model: originalModel });
+      updateConfig({ baseUrl: originalConfig.baseUrl, model: originalConfig.model });
     } catch (e) {
       // Ignore restore errors
     }
@@ -309,6 +316,58 @@ fastify.post('/api/test', async (request, reply) => {
   }
 });
 
+// ─── Search API routes ───
+
+// Get search config (API keys masked)
+fastify.get('/api/search/config', async (request, reply) => {
+  const cfg = getSearchConfig();
+  if (!cfg) return { provider: null, configured: false };
+  return {
+    provider: cfg.provider || null,
+    configured: isSearchConfigured(),
+    exa: cfg.exa ? {
+      apiKey: cfg.exa.apiKey ? '***configured***' : null,
+      baseUrl: cfg.exa.baseUrl || 'https://api.exa.ai'
+    } : null
+  };
+});
+
+// Save search config
+fastify.post('/api/search/config', async (request, reply) => {
+  const { provider, exa } = request.body;
+  const update = { provider: provider || 'exa' };
+  if (exa) {
+    update.exa = {
+      apiKey: (exa.apiKey || '').trim(),
+      baseUrl: (exa.baseUrl || 'https://api.exa.ai').trim()
+    };
+  }
+  updateSearchConfig(update);
+  return { success: true };
+});
+
+// Test search — run a quick query to verify the key works
+fastify.post('/api/search/test', async (request, reply) => {
+  try {
+    const result = await exaSearch('test query hello world', { numResults: 1, contents: false });
+    return { success: true, resultCount: result.resultCount };
+  } catch (error) {
+    return reply.status(400).send({ success: false, error: error.message });
+  }
+});
+
+// Execute a search (used by frontend for manual search testing)
+fastify.post('/api/search', async (request, reply) => {
+  const { query, numResults, type, category } = request.body;
+  if (!query) return reply.status(400).send({ error: 'query is required' });
+  try {
+    const result = await exaSearch(query, { numResults, type, category });
+    return result;
+  } catch (error) {
+    return reply.status(502).send({ error: error.message });
+  }
+});
+
 // WebSocket endpoint for agent communication
 fastify.get('/ws', { websocket: true }, (socket, req) => {
   clients.add(socket);
@@ -317,12 +376,13 @@ fastify.get('/ws', { websocket: true }, (socket, req) => {
   socket.send(JSON.stringify({
     type: 'connected',
     message: 'Connected to agent server',
-    apiConfigured: hasApiKey(),
+    apiConfigured: hasProviderAccess(),
     config: getConfig()
   }));
   
   socket.on('close', () => {
     clients.delete(socket);
+    activeHandlers.delete(socket);
   });
   
   socket.on('message', async (message) => {
@@ -331,6 +391,11 @@ fastify.get('/ws', { websocket: true }, (socket, req) => {
       
       if (data.type === 'task') {
         await handleTask(data.task, socket);
+      } else if (data.type === 'stop') {
+        const handler = activeHandlers.get(socket);
+        if (handler) {
+          handler.stop();
+        }
       } else if (data.type === 'ping') {
         socket.send(JSON.stringify({ type: 'pong' }));
       }
@@ -345,16 +410,17 @@ fastify.get('/ws', { websocket: true }, (socket, req) => {
 
 // Handle agent task
 async function handleTask(task, socket) {
-  if (!hasApiKey()) {
+  if (!hasProviderAccess()) {
     socket.send(JSON.stringify({
       type: 'error',
-      message: 'API key not configured. Please set your OpenAI API key first.'
+      message: 'Provider not configured. Set an API key for hosted providers, or use a local provider URL.'
     }));
     return;
   }
   
   // Create a new Master Handler for this task
   const masterHandler = createMasterHandler();
+  activeHandlers.set(socket, masterHandler);
   
   // Send task received confirmation
   broadcast({
@@ -372,11 +438,17 @@ async function handleTask(task, socket) {
     // processTask already sends a 'complete' event with the synthesized result.
     // No additional broadcast needed here.
   } catch (error) {
-    socket.send(JSON.stringify({
-      type: 'error',
-      agent: 'system',
-      message: error.message
-    }));
+    if (error.name === 'TaskStoppedError') {
+      broadcast({ type: 'stopped', agent: 'system' });
+    } else {
+      socket.send(JSON.stringify({
+        type: 'error',
+        agent: 'system',
+        message: error.message
+      }));
+    }
+  } finally {
+    activeHandlers.delete(socket);
   }
 }
 

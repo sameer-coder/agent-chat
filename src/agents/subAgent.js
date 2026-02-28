@@ -1,4 +1,15 @@
 import { chat, chatStream } from './openaiService.js';
+import { searchForPrompt, isSearchConfigured } from './searchService.js';
+
+/**
+ * Thrown when the user requests that a running task be stopped.
+ */
+export class TaskStoppedError extends Error {
+  constructor() {
+    super('Task stopped by user');
+    this.name = 'TaskStoppedError';
+  }
+}
 
 const MAX_QUESTIONS_PER_TASK = 5;
 
@@ -44,6 +55,27 @@ Rules:
 - Once you receive an answer, incorporate it and continue producing your final result.
 - Only ask when genuinely necessary — do not ask questions you can answer yourself.
 - Never ask more than ${MAX_QUESTIONS_PER_TASK} questions per subtask.
+
+WEB SEARCH CAPABILITY:
+You have access to real-time web search. When your task would benefit from
+up-to-date information, facts you are unsure about, or current data from the
+internet, you MUST use the search tool.
+
+To search the web, output EXACTLY this format on its own line:
+WEB_SEARCH: <your search query>
+
+Examples:
+WEB_SEARCH: latest Node.js LTS version 2026
+WEB_SEARCH: React Server Components best practices
+WEB_SEARCH: current price of Bitcoin
+
+Rules:
+- Use search when the task involves recent events, current data, or facts you
+  are not confident about.
+- You may issue multiple searches (each on a separate line) if needed.
+- After receiving search results, incorporate them into your work and cite
+  sources where appropriate.
+- Do NOT search for things you already know well.
 
 Remember: You are part of a team working together to solve a larger problem.`;
 
@@ -194,7 +226,17 @@ export class SubAgent {
     return results;
   }
 
-  async processSubtask(subtask, onChunk = null, onCommunication = null) {
+  static parseSearchQueries(text) {
+    const regex = /WEB_SEARCH:\s*(.+)/gi;
+    const results = [];
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      results.push(match[1].trim());
+    }
+    return results;
+  }
+
+  async processSubtask(subtask, onChunk = null, onCommunication = null, isStopped = null) {
     this.currentTask = subtask;
     this.questionsAsked = 0;
 
@@ -212,7 +254,46 @@ export class SubAgent {
     });
 
     try {
-      let response = await this._getLLMResponse(onChunk);
+      let response = await this._getLLMResponse(onChunk, isStopped);
+
+      // --- Handle WEB_SEARCH calls ---
+      const MAX_SEARCH_ROUNDS = 3;
+      let searchRound = 0;
+      let searchQueries = SubAgent.parseSearchQueries(response);
+
+      while (searchQueries.length > 0 && searchRound < MAX_SEARCH_ROUNDS && isSearchConfigured()) {
+        searchRound++;
+        this.conversationHistory.push({ role: 'assistant', content: response });
+        const searchResultParts = [];
+
+        for (const query of searchQueries) {
+          if (onCommunication) {
+            onCommunication({ type: 'web-search', from: this.agentId, query });
+          }
+          try {
+            const resultText = await searchForPrompt(query, { numResults: 5 });
+            searchResultParts.push(resultText);
+            if (onCommunication) {
+              onCommunication({ type: 'web-search-done', from: this.agentId, query, success: true });
+            }
+          } catch (err) {
+            searchResultParts.push(`[Search for "${query}" failed: ${err.message}]`);
+            if (onCommunication) {
+              onCommunication({ type: 'web-search-done', from: this.agentId, query, success: false, error: err.message });
+            }
+          }
+        }
+
+        this.conversationHistory.push({
+          role: 'user',
+          content: 'Here are the web search results you requested:\n\n' + searchResultParts.join('\n\n---\n\n') + '\n\nPlease incorporate these results into your work. You may issue more WEB_SEARCH queries if needed, or produce your final result.'
+        });
+
+        response = await this._getLLMResponse(onChunk, isStopped);
+        searchQueries = SubAgent.parseSearchQueries(response);
+      }
+
+      // --- Handle ASK_QUESTION calls ---
       let questions = SubAgent.parseQuestions(response);
 
       while (questions.length > 0 && this.questionsAsked < MAX_QUESTIONS_PER_TASK) {
@@ -245,7 +326,7 @@ export class SubAgent {
           content: answerParts.join('\n\n') + '\n\nPlease continue your work incorporating the answers above. If you need more information, ask another question using the same format. Otherwise produce your final result.'
         });
 
-        response = await this._getLLMResponse(onChunk);
+        response = await this._getLLMResponse(onChunk, isStopped);
         questions = SubAgent.parseQuestions(response);
       }
 
@@ -263,7 +344,7 @@ export class SubAgent {
             if (commResult.success) {
               this.conversationHistory.push({ role: 'assistant', content: response });
               this.conversationHistory.push({ role: 'user', content: `Response from ${targetAgent}: ${commResult.response}` });
-              response = await this._getLLMResponse(onChunk);
+              response = await this._getLLMResponse(onChunk, isStopped);
             }
           }
         }
@@ -272,23 +353,29 @@ export class SubAgent {
       this.conversationHistory.push({ role: 'assistant', content: response });
       return response;
     } catch (error) {
+      // Don't re-wrap TaskStoppedError — let it propagate as-is
+      if (error.name === 'TaskStoppedError') throw error;
       throw new Error(`Agent ${this.displayName} error: ${error.message}`);
     }
   }
 
-  async _getLLMResponse(onChunk = null) {
+  async _getLLMResponse(onChunk = null, isStopped = null) {
+    if (isStopped?.()) throw new TaskStoppedError();
     if (onChunk) {
       try {
         const chunks = [];
         for await (const chunk of chatStream(this.conversationHistory)) {
+          if (isStopped?.()) throw new TaskStoppedError();
           chunks.push(chunk);
           onChunk(chunk);
         }
         if (chunks.length > 0) return chunks.join('');
         console.log(`[${this.displayName}] chatStream produced 0 chunks, falling back to chat()`);
       } catch (streamErr) {
+        if (streamErr.name === 'TaskStoppedError') throw streamErr;
         console.log(`[${this.displayName}] chatStream error, falling back to chat(): ${streamErr.message}`);
       }
+      if (isStopped?.()) throw new TaskStoppedError();
       const result = await chat(this.conversationHistory);
       if (result) onChunk(result);
       return result || '';

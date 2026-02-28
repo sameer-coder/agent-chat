@@ -1,5 +1,6 @@
 import { chat, chatStream } from './openaiService.js';
-import { createSubAgent, getCommunicationBus, MAX_SUB_AGENTS } from './subAgent.js';
+import { createSubAgent, getCommunicationBus, MAX_SUB_AGENTS, TaskStoppedError } from './subAgent.js';
+
 
 const MASTER_HANDLER_SYSTEM_PROMPT = `You are the Master Handler - the central orchestrator of a multi-agent system.
 
@@ -20,6 +21,9 @@ Task Analysis Guidelines:
 - Each subtask should be meaningfully different from the others
 - Consider what can run in parallel
 - Never spawn more agents than there are meaningful subtasks
+- Your agents have access to real-time web search — if a task requires current
+  information, recent data, or facts from the internet, note this in the subtask
+  so the agent knows to search the web
 
 Communication Style:
 - Be clear and professional when directing agents
@@ -64,6 +68,8 @@ export async function withRetry(fn, operationName, onRetry = null) {
       const result = await fn();
       return { success: true, result, attempts: attempt + 1 };
     } catch (error) {
+      // Never retry on user-initiated stop — propagate immediately
+      if (error.name === 'TaskStoppedError') throw error;
       lastError = error;
       if (error.message?.includes('401') || error.message?.includes('403') || error.message?.includes('Invalid API key')) {
         break;
@@ -109,8 +115,19 @@ export class MasterHandler {
     this.subTasks = {};
     this.subTaskResults = {};
     this.executionLog = [];
+    this.stopped = false;
 
     getCommunicationBus().registerAgent('master-handler', this);
+  }
+
+  /** Signal that processing should stop at the next checkpoint. */
+  stop() {
+    this.stopped = true;
+  }
+
+  /** Throws TaskStoppedError if stop() has been called. */
+  checkStopped() {
+    if (this.stopped) throw new TaskStoppedError();
   }
 
   /**
@@ -182,6 +199,7 @@ export class MasterHandler {
 
   async processTask(task, onMessage = null) {
     this.executionLog = [];
+    this.stopped = false;
     this.log('task_started', { task });
 
     this.conversationHistory.push({ role: 'user', content: `User's task: "${task}"` });
@@ -201,6 +219,8 @@ export class MasterHandler {
         }
       }
     );
+
+    this.checkStopped();
 
     if (!analysisResult.success) {
       this.log('task_analysis_failed', { error: analysisResult.error });
@@ -242,6 +262,8 @@ export class MasterHandler {
     // Step 3: Process all subtasks in parallel
     const results = await this.processSubTasksWithRecovery(taskAnalysis.subtasks, onMessage);
 
+    this.checkStopped();
+
     // Log sub-agent results to dashboard (Round 1)
     if (onMessage) {
       for (let i = 0; i < agentCount; i++) {
@@ -265,6 +287,7 @@ export class MasterHandler {
     }
 
     for (let round = 1; round <= MAX_FOLLOW_UP_ROUNDS; round++) {
+      this.checkStopped();
       if (onMessage) {
         onMessage({ type: 'status', agent: 'master-handler', message: `Evaluating agent results (round ${round})...` });
       }
@@ -275,6 +298,7 @@ export class MasterHandler {
       }
 
       const evaluation = await this.evaluateResults(task, latestResults);
+      this.checkStopped();
       this.log('evaluation', { round, satisfied: evaluation.satisfied });
 
       if (onMessage) {
@@ -308,7 +332,10 @@ export class MasterHandler {
         followUpPromises.push(
           this.processFollowUpTask(i, enrichedTask, onMessage)
             .then(r => ({ agentIndex: i, result: r }))
-            .catch(e => ({ agentIndex: i, result: `[Follow-up failed: ${e.message}]` }))
+            .catch(e => {
+              if (e.name === 'TaskStoppedError') throw e;
+              return { agentIndex: i, result: `[Follow-up failed: ${e.message}]` };
+            })
         );
       }
 
@@ -325,6 +352,7 @@ export class MasterHandler {
     }
 
     // Step 5: Synthesize all results
+    this.checkStopped();
     if (onMessage) {
       onMessage({ type: 'status', agent: 'master-handler', message: `Synthesizing results from all ${agentCount} agents...` });
     }
@@ -365,6 +393,13 @@ export class MasterHandler {
 
     const promises = subtasks.map((subtask, i) => this.processSubTask(i, subtask, onMessage, onCommunication));
     const settled = await Promise.allSettled(promises);
+
+    // If any sub-task was stopped, propagate that immediately
+    for (const res of settled) {
+      if (res.status === 'rejected' && res.reason?.name === 'TaskStoppedError') {
+        throw res.reason;
+      }
+    }
 
     const results = settled.map((res, i) => {
       if (res.status === 'fulfilled') {
@@ -483,8 +518,10 @@ Only include as many SUBTASK lines as the AGENT_COUNT indicates.`;
       ? (chunk) => onMessage({ type: 'streaming', agent: agentIndex, agentIndex, chunk })
       : null;
 
+    const isStopped = () => this.stopped;
+
     const result = await withRetry(
-      () => this.subAgents[agentIndex].processSubtask(subtask, onChunk, onCommunication),
+      () => this.subAgents[agentIndex].processSubtask(subtask, onChunk, onCommunication, isStopped),
       `subtask_${agentIndex}`,
       (retryInfo) => {
         this.log('retry', { ...retryInfo, agent: agentIndex });
@@ -670,8 +707,10 @@ Only request follow-ups for genuinely important gaps. Minor stylistic issues do 
       ? (chunk) => onMessage({ type: 'streaming', agent: agentIndex, agentIndex, chunk })
       : null;
 
+    const isStopped = () => this.stopped;
+
     const result = await withRetry(
-      () => subAgent.processSubtask(followUpTask, onChunk, onCommunication),
+      () => subAgent.processSubtask(followUpTask, onChunk, onCommunication, isStopped),
       `follow_up_${agentIndex}`,
       (retryInfo) => {
         this.log('retry', { ...retryInfo, agent: agentIndex });

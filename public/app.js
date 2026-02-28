@@ -1,4 +1,4 @@
-// Multi-Agent Dashboard Frontend
+// Synapse Frontend
 
 class AgentDashboard {
   constructor() {
@@ -36,6 +36,9 @@ class AgentDashboard {
     this.agentResultModalBody = document.getElementById('agent-result-modal-body');
     this.closeAgentResultModalBtn = document.getElementById('close-agent-result-modal');
     
+    // Stop button
+    this.stopBtn = document.getElementById('stop-btn');
+
     // Dynamic agent cards container
     this.dynamicAgentCards = document.getElementById('dynamic-agent-cards');
     
@@ -139,6 +142,15 @@ class AgentDashboard {
         this.submitTask();
       }
     });
+
+    // Autoresize textarea
+    this.taskInput.addEventListener('input', () => {
+      this.taskInput.style.height = 'auto';
+      this.taskInput.style.height = this.taskInput.scrollHeight + 'px';
+    });
+    if (this.stopBtn) {
+      this.stopBtn.addEventListener('click', () => this.stopTask());
+    }
 
     // Sidebar toggle (mobile)
     if (this.sidebarToggle) {
@@ -313,6 +325,16 @@ class AgentDashboard {
 
   isAskCodiProvider(baseUrl) {
     return baseUrl.includes('askcodi.com');
+  }
+
+  isLocalProvider(baseUrl) {
+    if (!baseUrl) return false;
+    try {
+      const hostname = new URL(baseUrl).hostname.toLowerCase();
+      return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+    } catch (e) {
+      return false;
+    }
   }
 
   async refreshOpenRouterModelSection(baseUrl, forceRefresh = true) {
@@ -587,24 +609,24 @@ class AgentDashboard {
         this.addFinalResponse(data.message);
         this.updateAgentStatus('master-handler', 'Completed');
         this.isProcessing = false;
-        this.submitBtn.disabled = false;
-        this.submitBtn.innerHTML = `
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-          </svg>
-          Execute
-        `;
+        this._showExecuteBtn();
+        break;
+      case 'stopped':
+        this.addStoppedMessage();
+        this.updateAgentStatus('master-handler', 'Stopped');
+        this.isProcessing = false;
+        this._showExecuteBtn();
+        // Clean up active streaming containers
+        for (let i = 0; i < this.agentCount; i++) {
+          const streamingEl = document.getElementById(`streaming-container-${i}`);
+          if (streamingEl) streamingEl.remove();
+          delete this.streamingBuffers[i];
+        }
         break;
       case 'error':
         this.addErrorMessage(data.message);
         this.isProcessing = false;
-        this.submitBtn.disabled = false;
-        this.submitBtn.innerHTML = `
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-          </svg>
-          Execute
-        `;
+        this._showExecuteBtn();
         // Clean up any active streaming containers
         for (let i = 0; i < this.agentCount; i++) {
           const streamingEl = document.getElementById(`streaming-container-${i}`);
@@ -637,15 +659,54 @@ class AgentDashboard {
     this.isProcessing = true;
     this.submitBtn.disabled = true;
     this.submitBtn.innerHTML = `
-      <svg class="w-5 h-5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg class="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
       </svg>
       Processing...
     `;
+    if (this.stopBtn) this.stopBtn.classList.remove('hidden');
     
     this.ws.send(JSON.stringify({ type: 'task', task }));
     this.taskInput.value = '';
+    this.taskInput.style.height = 'auto';
+  }
+
+  stopTask() {
+    if (!this.isProcessing) return;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'stop' }));
+    }
+    if (this.stopBtn) this.stopBtn.disabled = true;
+  }
+
+  _showExecuteBtn() {
+    this.submitBtn.disabled = false;
+    this.submitBtn.innerHTML = `
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+      </svg>
+      Execute
+    `;
+    if (this.stopBtn) {
+      this.stopBtn.classList.add('hidden');
+      this.stopBtn.disabled = false;
+    }
+  }
+
+  addStoppedMessage() {
+    const div = document.createElement('div');
+    div.className = 'message-enter flex justify-center';
+    div.innerHTML = `
+      <div class="flex items-center gap-2 px-4 py-2 bg-orange-50 border border-orange-200 rounded-lg text-sm text-orange-700">
+        <svg class="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
+          <rect x="6" y="6" width="12" height="12" rx="1"/>
+        </svg>
+        Processing stopped by user.
+      </div>
+    `;
+    this.messagesContainer.appendChild(div);
+    div.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }
 
   getAgentLabel(agentId) {
@@ -1143,7 +1204,10 @@ class AgentDashboard {
     const apiKey = this.apiKeyInput.value.trim();
     const baseUrl = this.apiUrlInput.value.trim() || 'https://api.openai.com/v1';
     const model = this.modelInput.value.trim() || 'gpt-4o-mini';
-    if (!apiKey) { alert('Please enter an API key'); return; }
+    if (!apiKey && !this.isLocalProvider(baseUrl)) {
+      alert('Please enter an API key');
+      return;
+    }
     try {
       const response = await fetch('/api/config', {
         method: 'POST',
@@ -1247,7 +1311,10 @@ class AgentDashboard {
     const apiKey = this.apiKeyInput.value.trim();
     const baseUrl = this.apiUrlInput.value.trim() || 'https://api.openai.com/v1';
     const model = this.modelInput.value.trim() || 'gpt-4o-mini';
-    if (!apiKey) { alert('Please enter an API key first'); return; }
+    if (!apiKey && !this.isLocalProvider(baseUrl)) {
+      alert('Please enter an API key first');
+      return;
+    }
     const originalText = this.testConnectionBtn.textContent;
     this.testConnectionBtn.textContent = 'Testing...';
     this.testConnectionBtn.disabled = true;

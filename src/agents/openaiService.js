@@ -1,5 +1,16 @@
 import https from 'https';
+import http from 'http';
 import { getApiKey, getModel, getBaseUrl } from '../utils/config.js';
+
+/**
+ * Returns true when the URL targets a local machine (no API key needed, plain HTTP).
+ */
+function isLocalUrl(baseUrl) {
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch { return false; }
+}
 
 let lastApiKey = null;
 let lastBaseUrl = null;
@@ -20,15 +31,20 @@ async function directHttpsRequest(messages, isStream = false) {
   const apiKey = getApiKey();
   const baseUrl = getBaseUrl();
   const model = getModel();
-  
-  if (!apiKey) {
+  const local = isLocalUrl(baseUrl);
+
+  if (!apiKey && !local) {
     throw new Error('OpenAI API key not configured');
   }
   
   // Extract hostname from baseUrl
   const url = new URL(baseUrl);
   const hostname = url.hostname;
+  const isHttp = url.protocol === 'http:';
+  const defaultPort = isHttp ? 80 : 443;
+  const port = url.port ? parseInt(url.port, 10) : defaultPort;
   const path = url.pathname + '/chat/completions';
+  const transport = isHttp ? http : https;
   
   const isOpenRouter = hostname.includes('openrouter.ai');
   const isAskCodi = hostname.includes('askcodi.com');
@@ -44,7 +60,7 @@ async function directHttpsRequest(messages, isStream = false) {
   const headers = {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(postData),
-    'Authorization': `Bearer ${apiKey}`
+    ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
   };
   
   if (isOpenRouter) {
@@ -60,15 +76,15 @@ async function directHttpsRequest(messages, isStream = false) {
   return new Promise((resolve, reject) => {
     const options = {
       hostname,
-      port: 443,
+      port,
       path,
       method: 'POST',
       headers,
       // Bypass SSL verification for corporate proxy/VPN scenarios
-      rejectUnauthorized: false
+      ...(isHttp ? {} : { rejectUnauthorized: false })
     };
     
-    const req = https.request(options, (res) => {
+    const req = transport.request(options, (res) => {
       if (isStream) {
         resolve({ status: res.statusCode, body: res });
         return;
@@ -106,14 +122,19 @@ export async function* chatStream(messages) {
   const apiKey = getApiKey();
   const baseUrl = getBaseUrl();
   const model = getModel();
-  
-  if (!apiKey) {
+  const local = isLocalUrl(baseUrl);
+
+  if (!apiKey && !local) {
     throw new Error('OpenAI API key not configured');
   }
   
   const url = new URL(baseUrl);
   const hostname = url.hostname;
+  const isHttp = url.protocol === 'http:';
+  const defaultPort = isHttp ? 80 : 443;
+  const port = url.port ? parseInt(url.port, 10) : defaultPort;
   const path = url.pathname + '/chat/completions';
+  const transport = isHttp ? http : https;
   
   const isOpenRouter = hostname.includes('openrouter.ai');
   const isAskCodi = hostname.includes('askcodi.com');
@@ -129,7 +150,7 @@ export async function* chatStream(messages) {
   const headers = {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(postData),
-    'Authorization': `Bearer ${apiKey}`
+    ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
   };
   
   if (isOpenRouter) {
@@ -176,14 +197,14 @@ export async function* chatStream(messages) {
   // Start the HTTP request (non-blocking)
   const options = {
     hostname,
-    port: 443,
+    port,
     path,
     method: 'POST',
     headers,
-    rejectUnauthorized: false
+    ...(isHttp ? {} : { rejectUnauthorized: false })
   };
 
-  const req = https.request(options, (res) => {
+  const req = transport.request(options, (res) => {
     console.log(`[chatStream] Response status: ${res.statusCode}, content-type: ${res.headers['content-type']}`);
     
     if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {

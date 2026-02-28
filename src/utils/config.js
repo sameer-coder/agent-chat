@@ -120,7 +120,8 @@ function readConfigFile() {
       const activeKey = deriveProviderKey(parsed.baseUrl || 'https://api.openai.com/v1');
       return {
         activeProvider: activeKey,
-        providers: providers.length ? providers : defaultFileConfig().providers
+        providers: providers.length ? providers : defaultFileConfig().providers,
+        ...(parsed.search ? { search: parsed.search } : {})
       };
     }
 
@@ -129,7 +130,8 @@ function readConfigFile() {
       activeProvider: parsed.activeProvider || defaultFileConfig().activeProvider,
       providers: Array.isArray(parsed.providers) && parsed.providers.length
         ? parsed.providers
-        : defaultFileConfig().providers
+        : defaultFileConfig().providers,
+      ...(parsed.search ? { search: parsed.search } : {})
     };
   } catch (e) {
     console.error('Failed to parse config data, using defaults:', e.message);
@@ -269,6 +271,28 @@ export function setModel(model) {
  */
 export function hasApiKey() {
   return config.apiKey !== null && config.apiKey.length > 0;
+}
+
+/**
+ * Check whether a base URL points to a locally hosted provider.
+ * @param {string} baseUrl
+ * @returns {boolean}
+ */
+export function isLocalProviderBaseUrl(baseUrl) {
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * A provider is usable when it has an API key OR it is locally hosted.
+ * @returns {boolean}
+ */
+export function hasProviderAccess() {
+  return hasApiKey() || isLocalProviderBaseUrl(config.baseUrl);
 }
 
 /**
@@ -427,6 +451,27 @@ export function loadRecentModelsForProvider(baseUrl) {
   return provider && Array.isArray(provider.recentModels) ? provider.recentModels : [];
 }
 
+// ─── Search config helpers ───
+
+/**
+ * Get the search configuration section from the persisted config.
+ * @returns {Object|null}
+ */
+export function getSearchConfig() {
+  const data = readConfigFile();
+  return data.search || null;
+}
+
+/**
+ * Update the search configuration section and persist to disk.
+ * @param {Object} searchCfg - e.g. { provider: 'exa', exa: { apiKey: '...', baseUrl: '...' } }
+ */
+export function updateSearchConfig(searchCfg) {
+  const data = readConfigFile();
+  data.search = { ...(data.search || {}), ...searchCfg };
+  writeConfigFile(data);
+}
+
 export default {
   getApiKey,
   setApiKey,
@@ -435,6 +480,8 @@ export default {
   getModel,
   setModel,
   hasApiKey,
+  isLocalProviderBaseUrl,
+  hasProviderAccess,
   getConfig,
   updateConfig,
   getProviderConfig,
@@ -443,5 +490,7 @@ export default {
   loadApiKeyForProvider,
   loadModelForProvider,
   loadRecentModelsForProvider,
-  listProviders
+  listProviders,
+  getSearchConfig,
+  updateSearchConfig
 };
