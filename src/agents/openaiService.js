@@ -15,6 +15,28 @@ function isLocalUrl(baseUrl) {
 let lastApiKey = null;
 let lastBaseUrl = null;
 
+// ── Token usage tracking ──
+let _onTokenUsage = null;
+
+/**
+ * Register a callback that fires whenever an API call returns token usage info.
+ * Callback signature: ({ promptTokens, completionTokens, totalTokens, model }) => void
+ * Pass null to unregister.
+ */
+export function setTokenUsageCallback(cb) {
+  _onTokenUsage = typeof cb === 'function' ? cb : null;
+}
+
+function emitTokenUsage(usage, model) {
+  if (!_onTokenUsage || !usage) return;
+  _onTokenUsage({
+    promptTokens: usage.prompt_tokens || 0,
+    completionTokens: usage.completion_tokens || 0,
+    totalTokens: usage.total_tokens || 0,
+    model: model || getModel(),
+  });
+}
+
 /**
  * Force reset
  */
@@ -96,6 +118,7 @@ async function directHttpsRequest(messages, isStream = false, maxTokens = 2000) 
         if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
           try {
             const parsed = JSON.parse(data);
+            emitTokenUsage(parsed.usage, parsed.model);
             resolve(parsed.choices[0]?.message?.content || '');
           } catch (e) {
             reject(new Error(`Failed to parse response: ${data}`));
@@ -233,6 +256,7 @@ export async function* chatStream(messages) {
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
+          emitTokenUsage(parsed.usage, parsed.model);
           const content = parsed.choices?.[0]?.message?.content || '';
           if (content) {
             enqueue(content);
@@ -271,6 +295,10 @@ export async function* chatStream(messages) {
           }
           try {
             const parsed = JSON.parse(payload);
+            // Capture usage from final SSE chunk (OpenAI includes it)
+            if (parsed.usage) {
+              emitTokenUsage(parsed.usage, parsed.model);
+            }
             const content = parsed.choices[0]?.delta?.content || '';
             if (content) {
               enqueue(content);

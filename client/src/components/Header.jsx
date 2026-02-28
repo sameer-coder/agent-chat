@@ -1,5 +1,6 @@
 import { useOrchestration } from '../context/OrchestrationContext.jsx';
 import { extractProviderName } from '../utils.js';
+import TokenTracker from './TokenTracker.jsx';
 
 export default function Header({ onOpenSettings }) {
   const { isConnected, apiConfigured, currentConfig, isProcessing, currentTask, progress } = useOrchestration();
@@ -63,6 +64,9 @@ export default function Header({ onOpenSettings }) {
           </div>
         </div>
       )}
+
+      {/* Token / Cost Tracker */}
+      <TokenTracker />
 
       {/* Status indicators */}
       <div className="flex items-center gap-3">

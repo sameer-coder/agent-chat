@@ -341,5 +341,15 @@ function handleMessage(data, dispatch) {
     case 'error':
       dispatch({ type: ActionTypes.TASK_ERROR, message: data.message });
       break;
+
+    case 'token-usage':
+      dispatch({
+        type: ActionTypes.UPDATE_TOKEN_USAGE,
+        promptTokens: data.promptTokens || 0,
+        completionTokens: data.completionTokens || 0,
+        totalTokens: data.totalTokens || 0,
+        model: data.model || '',
+      });
+      break;
   }
 }

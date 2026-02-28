@@ -108,37 +108,35 @@ export default function ConversationFeed() {
   );
 }
 
+/** Parse a string agent ID like "sub-agent-0" to its numeric index, or return -1. */
+function parseAgentIndex(id) {
+  if (typeof id === 'number') return id;
+  const s = String(id).toLowerCase();
+  if (s === 'alpha' || s === 'sub-agent-alpha') return 0;
+  if (s === 'beta' || s === 'sub-agent-beta') return 1;
+  const m = s.match(/sub-agent-(\d+)/);
+  if (m) return parseInt(m[1], 10);
+  const n = parseInt(s, 10);
+  if (!isNaN(n) && n >= 0) return n;
+  return -1;
+}
+
 function FeedEntry({ msg, agentNames }) {
   const getAgentName = (agentIndexOrId) => {
-    if (agentIndexOrId === 'master-handler' || agentIndexOrId === 'master') return 'Master Handler';
+    if (agentIndexOrId === 'master-handler' || agentIndexOrId === 'master') return 'Master Agent';
     if (agentIndexOrId === 'system') return 'System';
-    if (typeof agentIndexOrId === 'number' && agentIndexOrId >= 0) {
-      return agentNames[agentIndexOrId] || `Agent ${agentIndexOrId}`;
-    }
-    // Resolve string IDs like "sub-agent-0" or "agent-0" to display names
-    if (typeof agentIndexOrId === 'string') {
-      const match = agentIndexOrId.match(/(?:sub-)?agent-(\d+)/);
-      if (match) {
-        const idx = parseInt(match[1], 10);
-        return agentNames[idx] || `Agent ${idx}`;
-      }
+    const idx = parseAgentIndex(agentIndexOrId);
+    if (idx >= 0) {
+      return agentNames[idx] || `Agent ${idx}`;
     }
     return String(agentIndexOrId);
   };
 
-  const parseAgentIndex = (agentIndexOrId) => {
-    if (typeof agentIndexOrId === 'number') return agentIndexOrId;
-    if (typeof agentIndexOrId === 'string') {
-      const match = agentIndexOrId.match(/(?:sub-)?agent-(\d+)/);
-      if (match) return parseInt(match[1], 10);
-    }
-    return -1;
-  };
-
   const getColor = (agentIndex) => {
+    if (agentIndex === 'master-handler' || agentIndex === 'master' || agentIndex === 'system') return MASTER_COLOR;
     const idx = parseAgentIndex(agentIndex);
-    if (agentIndex === 'master-handler' || agentIndex === 'master' || agentIndex === 'system' || idx < 0) return MASTER_COLOR;
-    return getAgentColor(idx);
+    if (idx >= 0) return getAgentColor(idx);
+    return MASTER_COLOR;
   };
 
   switch (msg.type) {
@@ -255,30 +253,12 @@ function TaskBreakdownEntry({ msg, agentNames }) {
   );
 }
 
-function extractPreviewSentences(text, count = 4) {
-  if (!text) return '';
-  // Strip markdown symbols for a cleaner preview
-  const plain = text
-    .replace(/```[\s\S]*?```/g, '')
-    .replace(/`[^`]*`/g, (m) => m.slice(1, -1))
-    .replace(/#{1,6}\s+/g, '')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/\n+/g, ' ')
-    .trim();
-  // Split on sentence-ending punctuation followed by whitespace or end of string
-  const sentences = plain.match(/[^.!?]*[.!?]+(?:\s|$)/g) || [plain];
-  return sentences.slice(0, count).join(' ').trim();
-}
-
 function AgentResultEntry({ msg, getName, getColor }) {
   const color = getColor(msg.agentIndex);
   const name = getName(msg.agentIndex);
   const roundLabel = msg.round > 1 ? ` (Follow-up Round ${msg.round - 1})` : '';
   const isLong = (msg.text || '').length > 300;
   const [expanded, setExpanded] = useState(!isLong);
-  const preview = isLong ? extractPreviewSentences(msg.text, 4) : '';
 
   return (
     <div className="flex gap-2.5 py-2 border-b border-gray-100 animate-fade-slide-in">
@@ -313,11 +293,8 @@ function AgentResultEntry({ msg, getName, getColor }) {
             dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.text || '') }}
           />
         ) : (
-          <div className="mt-1">
-            <p className="text-[13px] text-gray-600 leading-snug line-clamp-4">{preview}</p>
-            <span className="text-[11px] text-gray-400 italic">
-              — {(msg.text || '').length.toLocaleString()} chars total
-            </span>
+          <div className="text-[11px] text-gray-400 mt-1 italic">
+            Result collapsed — {(msg.text || '').length.toLocaleString()} chars
           </div>
         )}
       </div>
@@ -335,7 +312,7 @@ function EvaluationEntry({ msg }) {
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-[13px] font-semibold flex items-center gap-1">
-          <span className="text-gray-700">Master Handler — Evaluation</span>
+          <span className="text-gray-700">Master Agent — Evaluation</span>
           <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded uppercase tracking-wider ${satisfied ? 'bg-green-50 text-green-600' : 'bg-orange-50 text-orange-600'}`}>
             {satisfied ? 'Satisfied' : 'Needs Follow-up'}
           </span>
@@ -367,7 +344,7 @@ function FollowUpEntry({ msg, getName, getColor }) {
 }
 
 function CommunicationEntry({ msg, getName, getColor }) {
-  const fromColor = getColor(typeof msg.from === 'number' ? msg.from : -1);
+  const fromColor = getColor(msg.from);
   const fromName = getName(msg.from);
   const toName = getName(msg.to);
   return (
@@ -388,7 +365,7 @@ function CommunicationEntry({ msg, getName, getColor }) {
 }
 
 function QuestionEntry({ msg, getName, getColor }) {
-  const fromColor = getColor(typeof msg.from === 'number' ? msg.from : -1);
+  const fromColor = getColor(msg.from);
   const fromName = getName(msg.from);
   const toName = getName(msg.to);
   return (
@@ -409,7 +386,7 @@ function QuestionEntry({ msg, getName, getColor }) {
 }
 
 function AnswerEntry({ msg, getName, getColor }) {
-  const fromColor = getColor(typeof msg.from === 'number' ? msg.from : -1);
+  const fromColor = getColor(msg.from);
   const fromName = getName(msg.from);
   const toName = getName(msg.to);
   return (
@@ -430,7 +407,7 @@ function AnswerEntry({ msg, getName, getColor }) {
 }
 
 function RetryEntry({ msg, getName }) {
-  const displayName = msg.agent === 'master-handler' ? 'Master Handler' : getName(msg.agentIndex);
+  const displayName = msg.agent === 'master-handler' ? 'Master Agent' : getName(msg.agentIndex);
   return (
     <div className="flex gap-2.5 py-2 border-b border-gray-100 animate-fade-slide-in">
       <div className="text-[11px] text-gray-400 whitespace-nowrap pt-0.5 min-w-12">{msg.timeLabel}</div>
@@ -444,7 +421,7 @@ function RetryEntry({ msg, getName }) {
 }
 
 function WarningEntry({ msg, getName }) {
-  const displayName = msg.agent === 'master-handler' ? 'Master Handler' : getName(msg.agentIndex);
+  const displayName = msg.agent === 'master-handler' ? 'Master Agent' : getName(msg.agentIndex);
   return (
     <div className="flex gap-2.5 py-2 border-b border-gray-100 animate-fade-slide-in">
       <div className="text-[11px] text-gray-400 whitespace-nowrap pt-0.5 min-w-12">{msg.timeLabel}</div>
