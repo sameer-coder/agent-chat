@@ -2,7 +2,7 @@
 
 A real-time multi-agent orchestration dashboard that breaks complex research tasks into subtasks, delegates them to specialized AI agents running in parallel, and synthesizes a unified result — all streamed live to an interactive three-panel UI.
 
-![Multi Agent Deep Research Dashboard](docs/screenshot.png)
+![Multi Agent Deep Research Dashboard](docs/screenshot.jpg)
 
 ---
 
