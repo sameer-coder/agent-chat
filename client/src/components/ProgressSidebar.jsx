@@ -1,6 +1,7 @@
 import { useOrchestration } from '../context/OrchestrationContext.jsx';
 import { getAgentColor, getAgentIcon, MASTER_COLOR, MASTER_ICON } from '../context/orchestrationReducer.js';
 import { renderMarkdown } from '../utils.js';
+import AgentIcon from './AgentIcons.jsx';
 
 export default function ProgressSidebar() {
   const { subtasks, agentNames, selectedAgent, agentStatus, agentResults, messages, streamingBuffers } = useOrchestration();
@@ -30,7 +31,7 @@ export default function ProgressSidebar() {
                     <div>
                       <div className="leading-snug">{st.task}</div>
                       <div className="text-[10px] mt-0.5 flex items-center gap-1" style={{ color: color.dot }}>
-                        {getAgentIcon(st.agentIndex)} {name}
+                        <AgentIcon iconKey={getAgentIcon(st.agentIndex)} size={12} /> {name}
                       </div>
                     </div>
                   </div>
@@ -89,7 +90,7 @@ function AgentDetail({ agentId, agentNames, agentStatus, agentResults, messages,
   const isMaster = agentId === 'master';
   const name = isMaster ? 'Master Agent' : (agentNames[agentId] || `Agent ${agentId}`);
   const color = isMaster ? MASTER_COLOR : getAgentColor(agentId);
-  const icon = isMaster ? MASTER_ICON : getAgentIcon(agentId);
+  const iconKey = isMaster ? MASTER_ICON : getAgentIcon(agentId);
   const status = isMaster ? (agentStatus.master || 'Idle') : (agentStatus[agentId] || 'Idle');
 
   // Count messages related to this agent
@@ -113,8 +114,8 @@ function AgentDetail({ agentId, agentNames, agentStatus, agentResults, messages,
     <div className="bg-gray-50 rounded-lg p-3">
       {/* Header */}
       <div className="flex items-center gap-2 mb-3">
-        <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm text-white" style={{ background: color.dot }}>
-          {icon}
+        <div className="w-8 h-8 rounded-full flex items-center justify-center text-white" style={{ background: color.dot }}>
+          <AgentIcon iconKey={iconKey} size={16} />
         </div>
         <div>
           <div className="text-[13px] font-semibold">{name}</div>

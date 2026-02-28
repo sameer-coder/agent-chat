@@ -14,9 +14,9 @@ export function getAgentColor(index) {
   return AGENT_COLORS[index % AGENT_COLORS.length];
 }
 
-// Agent icons (emoji) for the topology visualization
-export const AGENT_ICONS = ['⚡', '🔍', '💻', '🔎', '🧪'];
-export const MASTER_ICON = '🎯';
+// Agent icon keys for the topology visualization (mapped to SVG components in AgentIcons.jsx)
+export const AGENT_ICONS = ['bolt', 'search', 'code', 'analyze', 'flask'];
+export const MASTER_ICON = 'command';
 
 export function getAgentIcon(index) {
   if (index < 0) return MASTER_ICON;

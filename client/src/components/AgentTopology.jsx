@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useOrchestration, useOrchestrationDispatch } from '../context/OrchestrationContext.jsx';
 import { ActionTypes, getAgentColor, getAgentIcon, MASTER_COLOR, MASTER_ICON } from '../context/orchestrationReducer.js';
 import { renderMarkdown } from '../utils.js';
+import AgentIcon from './AgentIcons.jsx';
 
 /* ── Lightning bolt that travels along an edge ── */
 function LightningBolt({ x1, y1, x2, y2, id: edgeId }) {
@@ -119,8 +120,9 @@ function computeEdges(agentCount) {
 function AgentNode({ id, agent, position, isSelected, status, onClick, containerSize, isTaskComplete }) {
   const isMaster = id === 'master';
   const color = isMaster ? MASTER_COLOR : getAgentColor(id);
-  const icon = isMaster ? MASTER_ICON : getAgentIcon(id);
-  const circleSize = isMaster ? 56 : 48;
+  const iconKey = isMaster ? MASTER_ICON : getAgentIcon(id);
+  const circleSize = isMaster ? 58 : 50;
+  const iconSize = isMaster ? 26 : 22;
   // If the overall task is complete, no agent should show as "Working"
   const isWorking = !isTaskComplete && status && (status.includes('Streaming') || status.includes('Working') || status.includes('Analyzing') || status.includes('Processing'));
   const isDone = isTaskComplete || (status && (status.includes('Completed') || status.includes('Complete')));
@@ -130,48 +132,59 @@ function AgentNode({ id, agent, position, isSelected, status, onClick, container
 
   return (
     <div
-      className={`absolute flex flex-col items-center gap-1.5 cursor-pointer transition-transform z-[2] hover:scale-108 ${isSelected ? '' : ''}`}
+      className={`absolute flex flex-col items-center gap-1.5 cursor-pointer z-[2] agent-node-wrapper ${isSelected ? 'agent-node-selected' : ''}`}
       style={{ left: x, top: y, transform: 'translate(-50%, -50%)' }}
       onClick={onClick}
     >
-      {/* Node circle */}
+      {/* Node circle — gradient + glass border + colored shadow */}
       <div
-        className="rounded-full flex items-center justify-center text-white relative"
+        className="agent-node-circle rounded-full flex items-center justify-center text-white relative"
         style={{
           width: circleSize,
           height: circleSize,
-          background: color.dot,
-          fontSize: isMaster ? 24 : 20,
-          boxShadow: isSelected ? `0 0 0 3px ${color.dot}40` : undefined,
+          background: `linear-gradient(145deg, ${color.dot}e6, ${color.dot})`,
+          boxShadow: isSelected
+            ? `0 0 0 3px ${color.dot}30, 0 6px 20px ${color.dot}35`
+            : `0 4px 14px ${color.dot}25, inset 0 1px 1px rgba(255,255,255,0.18)`,
         }}
       >
-        {icon}
+        <AgentIcon iconKey={iconKey} size={iconSize} />
 
         {/* Spinning ring for working state */}
         {isWorking && (
           <div
-            className="absolute inset-[-3px] rounded-full border-[2.5px] border-transparent animate-spin-ring"
-            style={{ borderTopColor: color.dot }}
+            className="absolute inset-[-4px] rounded-full border-[2px] border-transparent animate-spin-ring"
+            style={{ borderTopColor: color.dot, borderRightColor: `${color.dot}40` }}
           />
         )}
 
-        {/* Done checkmark ring */}
+        {/* Done checkmark — subtle green ring + check */}
         {isDone && (
-          <div
-            className="absolute inset-[-3px] rounded-full border-2"
-            style={{ borderColor: '#059669' }}
-          />
+          <div className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center shadow-sm">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
         )}
       </div>
 
       {/* Label */}
-      <div className="text-[11px] font-semibold whitespace-nowrap" style={{ color: color.dot }}>
+      <div className="text-[11px] font-semibold whitespace-nowrap tracking-tight" style={{ color: color.text }}>
         {agent.name}
       </div>
 
-      {/* Status */}
-      <div className="text-[10px] text-gray-500 whitespace-nowrap">
-        {isDone ? '✓ Complete' : isWorking ? '⚡ Working' : status || 'Idle'}
+      {/* Status pill */}
+      <div className="agent-node-status">
+        {isDone ? (
+          <span className="agent-status-pill agent-status-done">Complete</span>
+        ) : isWorking ? (
+          <span className="agent-status-pill agent-status-working" style={{ color: color.dot, borderColor: `${color.dot}30` }}>
+            <span className="agent-status-dot" style={{ background: color.dot }} />
+            Working
+          </span>
+        ) : (
+          <span className="agent-status-pill agent-status-idle">{status || 'Stopped'}</span>
+        )}
       </div>
     </div>
   );
@@ -260,7 +273,7 @@ function TopologyDiagram({ agents, agentCount, agentStatus, selectedAgent, posit
 /* ── Agent streaming / result panel for the expanded view ── */
 function AgentStreamPanel({ agentIndex, agentName, streamingContent, result, status }) {
   const color = getAgentColor(agentIndex);
-  const icon = getAgentIcon(agentIndex);
+  const iconKey = getAgentIcon(agentIndex);
   const isStreaming = !!streamingContent;
   const content = streamingContent || result || '';
   const scrollRef = useRef(null);
@@ -285,10 +298,10 @@ function AgentStreamPanel({ agentIndex, agentName, streamingContent, result, sta
         style={{ background: color.headerBg, borderColor: color.border }}
       >
         <div
-          className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs shrink-0"
+          className="w-6 h-6 rounded-full flex items-center justify-center text-white shrink-0"
           style={{ background: color.dot }}
         >
-          {icon}
+          <AgentIcon iconKey={iconKey} size={14} />
         </div>
         <span className="text-xs font-semibold truncate" style={{ color: color.text }}>
           {agentName}
