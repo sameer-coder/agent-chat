@@ -116,7 +116,7 @@ function computeEdges(agentCount) {
   return edges;
 }
 
-function AgentNode({ id, agent, position, isSelected, status, onClick, containerSize, isTaskComplete }) {
+function AgentNode({ id, agent, position, isSelected, status, onClick, containerSize, isTaskComplete, streamingText }) {
   const isMaster = id === 'master';
   const color = isMaster ? MASTER_COLOR : getAgentColor(id);
   const icon = isMaster ? MASTER_ICON : getAgentIcon(id);
@@ -128,12 +128,30 @@ function AgentNode({ id, agent, position, isSelected, status, onClick, container
   const x = (position.x / 100) * containerSize.width;
   const y = (position.y / 100) * containerSize.height;
 
+  // Truncate streaming text for the thought bubble
+  const bubbleText = streamingText
+    ? (streamingText.length > 60 ? streamingText.slice(-60).replace(/^\S*\s/, '') + '...' : streamingText)
+    : null;
+
+  // Determine bubble placement: if agent is in the top half, show below; otherwise above
+  const showBelow = position.y < 50;
+
   return (
     <div
       className={`absolute flex flex-col items-center gap-1.5 cursor-pointer transition-transform z-[2] hover:scale-108 ${isSelected ? '' : ''}`}
       style={{ left: x, top: y, transform: 'translate(-50%, -50%)' }}
       onClick={onClick}
     >
+      {/* Thought bubble — above the node */}
+      {bubbleText && !showBelow && (
+        <div className="thought-bubble thought-bubble-above" style={{ borderColor: color.border, background: color.bg }}>
+          <span className="thought-bubble-text" style={{ color: color.text }}>{bubbleText}</span>
+          <span className="thought-bubble-cursor" style={{ background: color.dot }} />
+          <div className="thought-bubble-tail thought-bubble-tail-below" style={{ borderTopColor: color.border }} />
+          <div className="thought-bubble-tail-inner thought-bubble-tail-inner-below" style={{ borderTopColor: color.bg }} />
+        </div>
+      )}
+
       {/* Node circle */}
       <div
         className="rounded-full flex items-center justify-center text-white relative"
@@ -173,12 +191,22 @@ function AgentNode({ id, agent, position, isSelected, status, onClick, container
       <div className="text-[10px] whitespace-nowrap" style={{ color: '#1e2124' }}>
         {isDone ? '✓ Complete' : isWorking ? '⚡ Working' : status || 'Idle'}
       </div>
+
+      {/* Thought bubble — below the node */}
+      {bubbleText && showBelow && (
+        <div className="thought-bubble thought-bubble-below" style={{ borderColor: color.border, background: color.bg }}>
+          <div className="thought-bubble-tail thought-bubble-tail-above" style={{ borderBottomColor: color.border }} />
+          <div className="thought-bubble-tail-inner thought-bubble-tail-inner-above" style={{ borderBottomColor: color.bg }} />
+          <span className="thought-bubble-text" style={{ color: color.text }}>{bubbleText}</span>
+          <span className="thought-bubble-cursor" style={{ background: color.dot }} />
+        </div>
+      )}
     </div>
   );
 }
 
 /* ── Reusable topology diagram (used in normal + expanded views) ── */
-function TopologyDiagram({ agents, agentCount, agentStatus, selectedAgent, positions, edges, dispatch, activeEdges = [], isTaskComplete = false }) {
+function TopologyDiagram({ agents, agentCount, agentStatus, selectedAgent, positions, edges, dispatch, activeEdges = [], isTaskComplete = false, streamingBuffers = {} }) {
   const containerRef = useRef(null);
   const [containerSize, setContainerSize] = useState({ width: 400, height: 400 });
 
@@ -244,6 +272,7 @@ function TopologyDiagram({ agents, agentCount, agentStatus, selectedAgent, posit
               status={agentStatus[agent.id === 'master' ? 'master' : agent.id]}
               containerSize={containerSize}
               isTaskComplete={isTaskComplete}
+              streamingText={streamingBuffers[agent.id] || null}
               onClick={() => dispatch({ type: ActionTypes.SELECT_AGENT, agent: agent.id })}
             />
           ))}
@@ -395,6 +424,7 @@ function ExpandedTopologyOverlay({ agents, agentCount, agentStatus, selectedAgen
               dispatch={dispatch}
               activeEdges={activeEdges}
               isTaskComplete={isTaskComplete}
+              streamingBuffers={streamingBuffers}
             />
           </div>
 
@@ -472,6 +502,7 @@ export default function AgentTopology() {
           dispatch={dispatch}
           activeEdges={activeEdges}
           isTaskComplete={isTaskComplete}
+          streamingBuffers={streamingBuffers}
         />
       </div>
 

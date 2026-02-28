@@ -1,5 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import confetti from 'canvas-confetti';
 import { useWebSocket } from './hooks/useWebSocket.js';
+import { useOrchestration } from './context/OrchestrationContext.jsx';
 import Header from './components/Header.jsx';
 import TaskInput from './components/TaskInput.jsx';
 import AgentTopology from './components/AgentTopology.jsx';
@@ -42,7 +44,48 @@ function MaximizeBtn({ isMaximized, onClick }) {
 
 export default function App() {
   const { sendTask, stopTask } = useWebSocket();
+  const { progress, isProcessing } = useOrchestration();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const prevProgressRef = useRef(0);
+
+  /* 🎉 Confetti burst when task completes (progress jumps to 100) */
+  useEffect(() => {
+    if (progress === 100 && prevProgressRef.current < 100) {
+      // Multi-burst celebration
+      const duration = 2000;
+      const end = Date.now() + duration;
+
+      // Initial big burst from center
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ['#06b6d4', '#10b981', '#f59e0b', '#f43f5e', '#6366f1', '#0d9488'],
+      });
+
+      // Continuous side bursts
+      const interval = setInterval(() => {
+        if (Date.now() > end) { clearInterval(interval); return; }
+        confetti({
+          particleCount: 30,
+          angle: 60,
+          spread: 55,
+          origin: { x: 0, y: 0.65 },
+          colors: ['#06b6d4', '#10b981', '#6366f1'],
+        });
+        confetti({
+          particleCount: 30,
+          angle: 120,
+          spread: 55,
+          origin: { x: 1, y: 0.65 },
+          colors: ['#f59e0b', '#f43f5e', '#0d9488'],
+        });
+      }, 250);
+
+      return () => clearInterval(interval);
+    }
+    prevProgressRef.current = progress;
+  }, [progress]);
 
   /* Panel widths as percentages */
   const [widths, setWidths] = useState(DEFAULT_WIDTHS);
