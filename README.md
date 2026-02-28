@@ -4,6 +4,8 @@ A real-time multi-agent orchestration dashboard that breaks complex research tas
 
 ![Multi Agent Deep Research Dashboard](docs/screenshot.jpg)
 
+![Multi Agent Deep Research Dashboard](docs/screenshot1.jpg)
+
 ---
 
 ## Features
@@ -142,7 +144,8 @@ agent-chat/
 ├── plans/
 │   └── architecture.md             # Architecture documentation
 └── docs/
-    └── screenshot.png              # Application screenshot
+    ├── screenshot.jpg              # Application screenshot
+    └── screenshot1.jpg             # Application screenshot (alternate view)
 ```
 
 ---
