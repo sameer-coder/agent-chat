@@ -1,4 +1,4 @@
-import { chat, chatStream } from './openaiService.js';
+import { chat, chatStream, setCallAgentLabel } from './openaiService.js';
 import { searchForPrompt, isSearchConfigured } from './searchService.js';
 
 /**
@@ -361,6 +361,7 @@ export class SubAgent {
 
   async _getLLMResponse(onChunk = null, isStopped = null) {
     if (isStopped?.()) throw new TaskStoppedError();
+    setCallAgentLabel(this.agentId);
     if (onChunk) {
       try {
         const chunks = [];
@@ -391,6 +392,7 @@ export class SubAgent {
       content: `${fromName} is asking you a question:\n"${question}"\n\nPlease answer the question based on your current knowledge and work. Keep your answer focused, helpful, and relevant. Do NOT use the ASK_QUESTION_TO format in your answer.`
     });
     try {
+      setCallAgentLabel(this.agentId);
       const response = await chat(this.conversationHistory);
       this.conversationHistory.push({ role: 'assistant', content: response });
       return response;
@@ -406,6 +408,7 @@ export class SubAgent {
       content: `Message from ${fromName}: ${message}\n\nPlease respond appropriately. Keep your response focused and relevant to your current task.`
     });
     try {
+      setCallAgentLabel(this.agentId);
       const response = await chat(this.conversationHistory);
       this.conversationHistory.push({ role: 'assistant', content: response });
       return response;

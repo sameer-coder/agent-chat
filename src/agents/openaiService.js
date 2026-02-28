@@ -37,6 +37,94 @@ function emitTokenUsage(usage, model) {
   });
 }
 
+// ── Context snapshot tracking ──
+let _onContextSnapshot = null;
+let _currentCallAgentLabel = 'unknown';
+let _snapshotCallId = 0;
+
+/**
+ * Register a callback that fires before every API call with a snapshot of
+ * the messages array grouped by role.
+ * Callback signature: (snapshot) => void  where snapshot is:
+ *   { callId, agentLabel, timestamp, model, sections, totalEstimatedTokens }
+ * Pass null to unregister.
+ */
+export function setContextSnapshotCallback(cb) {
+  _onContextSnapshot = typeof cb === 'function' ? cb : null;
+}
+
+/**
+ * Set the agent label used to tag the next (and future) context snapshots.
+ * Call this immediately before invoking chat() or chatStream().
+ */
+export function setCallAgentLabel(label) {
+  _currentCallAgentLabel = label || 'unknown';
+}
+
+function buildSections(messages) {
+  // Group consecutive messages by role; search-result injections are tagged separately
+  const sectionMap = {};
+  for (const msg of messages) {
+    let role = msg.role; // 'system' | 'user' | 'assistant'
+    // Heuristic: user messages that begin with search result injection text are
+    // categorised as 'tool_result' for display purposes.
+    if (role === 'user' && typeof msg.content === 'string' &&
+        (msg.content.startsWith('Here are the web search results') ||
+         msg.content.startsWith('Search results for'))) {
+      role = 'tool_result';
+    }
+    if (!sectionMap[role]) {
+      sectionMap[role] = { role, messageCount: 0, charCount: 0, estimatedTokens: 0 };
+    }
+    const chars = typeof msg.content === 'string' ? msg.content.length : JSON.stringify(msg.content).length;
+    sectionMap[role].messageCount += 1;
+    sectionMap[role].charCount += chars;
+    sectionMap[role].estimatedTokens += Math.ceil(chars / 4);
+  }
+  // Return in a stable display order
+  const ORDER = ['system', 'user', 'assistant', 'tool_result'];
+  return ORDER.filter(r => sectionMap[r]).map(r => sectionMap[r]);
+}
+
+/**
+ * Build an array of individual messages with role+content for the full content
+ * viewer.  Each entry carries the effective role (with the tool_result heuristic)
+ * and estimated tokens so the UI can render per-message detail.
+ */
+function buildMessages(messages) {
+  return messages.map((msg, i) => {
+    let role = msg.role;
+    if (role === 'user' && typeof msg.content === 'string' &&
+        (msg.content.startsWith('Here are the web search results') ||
+         msg.content.startsWith('Search results for'))) {
+      role = 'tool_result';
+    }
+    const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content, null, 2);
+    return {
+      index: i,
+      role,
+      content,
+      charCount: content.length,
+      estimatedTokens: Math.ceil(content.length / 4),
+    };
+  });
+}
+
+function emitContextSnapshot(messages) {
+  if (!_onContextSnapshot) return;
+  const sections = buildSections(messages);
+  const totalEstimatedTokens = sections.reduce((s, sec) => s + sec.estimatedTokens, 0);
+  _onContextSnapshot({
+    callId: ++_snapshotCallId,
+    agentLabel: _currentCallAgentLabel,
+    timestamp: Date.now(),
+    model: getModel(),
+    sections,
+    totalEstimatedTokens,
+    messages: buildMessages(messages),
+  });
+}
+
 /**
  * Force reset
  */
@@ -50,6 +138,7 @@ export function resetClient() {
  * Direct fetch call using native https module to bypass SSL issues
  */
 async function directHttpsRequest(messages, isStream = false, maxTokens = 2000) {
+  emitContextSnapshot(messages);
   const apiKey = getApiKey();
   const baseUrl = getBaseUrl();
   const model = getModel();
@@ -147,6 +236,7 @@ async function directHttpsRequest(messages, isStream = false, maxTokens = 2000) 
  * Send a chat message and get a streaming response
  */
 export async function* chatStream(messages) {
+  emitContextSnapshot(messages);
   const apiKey = getApiKey();
   const baseUrl = getBaseUrl();
   const model = getModel();

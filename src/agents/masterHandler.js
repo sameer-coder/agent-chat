@@ -1,4 +1,4 @@
-import { chat, chatStream, setTokenUsageCallback } from './openaiService.js';
+import { chat, chatStream, setTokenUsageCallback, setContextSnapshotCallback, setCallAgentLabel } from './openaiService.js';
 import { createSubAgent, getCommunicationBus, MAX_SUB_AGENTS, TaskStoppedError } from './subAgent.js';
 
 
@@ -179,6 +179,7 @@ export class MasterHandler {
     const answerPrompt = `${fromName} is asking you a question while working on their subtask:\n\n"${question}"\n\nAnswer the question helpfully and concisely based on the original user task and the context you have. Do NOT re-assign tasks or break down work — just answer the question.`;
 
     try {
+      setCallAgentLabel('master');
       const response = await chat([
         ...this.conversationHistory,
         { role: 'user', content: answerPrompt }
@@ -217,6 +218,13 @@ export class MasterHandler {
     setTokenUsageCallback((usage) => {
       if (onMessage && !this.stopped) {
         onMessage({ type: 'token-usage', ...usage });
+      }
+    });
+
+    // Wire up context snapshot tracking — forward every pre-call snapshot to the UI
+    setContextSnapshotCallback((snapshot) => {
+      if (onMessage && !this.stopped) {
+        onMessage({ type: 'context-snapshot', ...snapshot });
       }
     });
 
@@ -402,6 +410,7 @@ export class MasterHandler {
 
     // Clean up token usage callback
     setTokenUsageCallback(null);
+    setContextSnapshotCallback(null);
 
     return synthesis;
   }
@@ -462,6 +471,7 @@ SUBTASK 5: [Fifth subtask - if needed]
 
 Only include as many SUBTASK lines as the AGENT_COUNT indicates.`;
 
+    setCallAgentLabel('master');
     const response = await chat([
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
       { role: 'user', content: analysisPrompt }
@@ -601,6 +611,7 @@ ${roundsNote}
 
 IMPORTANT: Always refer to the agents by their names. The outputs above ARE the completed results. Synthesize these results into a coherent, complete final response for the user. Combine findings, address overlaps or conflicts, and present a unified solution.`;
 
+    setCallAgentLabel('master');
     const response = await chat([
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
       { role: 'user', content: synthesisPrompt }
@@ -641,6 +652,7 @@ REASONING: [Brief explanation of your evaluation]
 ${followUpLines}
 Only request follow-ups for genuinely important gaps. Minor stylistic issues do not warrant follow-ups.`;
 
+    setCallAgentLabel('master');
     const response = await chat([
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
       { role: 'user', content: evaluationPrompt }

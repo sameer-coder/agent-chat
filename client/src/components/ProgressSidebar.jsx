@@ -3,14 +3,16 @@ import { getAgentColor, getAgentIcon, MASTER_COLOR, MASTER_ICON } from '../conte
 import { renderMarkdown } from '../utils.js';
 import AgentIcon from './AgentIcons.jsx';
 
-export default function ProgressSidebar() {
+export default function ProgressSidebar({ embedded = false }) {
   const { subtasks, agentNames, selectedAgent, agentStatus, agentResults, messages, streamingBuffers } = useOrchestration();
 
-  return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col overflow-hidden h-full">
-      <div className="px-4 py-3 border-b border-gray-200 text-xs font-semibold shrink-0">
-        Progress & Details
-      </div>
+  const content = (
+    <>
+      {!embedded && (
+        <div className="px-4 py-3 border-b border-gray-200 text-xs font-semibold shrink-0">
+          Progress &amp; Details
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-4 py-3 custom-scrollbar">
         {/* Task Breakdown */}
@@ -60,6 +62,16 @@ export default function ProgressSidebar() {
           )}
         </div>
       </div>
+    </>
+  );
+
+  if (embedded) {
+    return <div className="flex flex-col h-full overflow-hidden">{content}</div>;
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col overflow-hidden h-full">
+      {content}
     </div>
   );
 }
