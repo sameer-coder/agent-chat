@@ -8,7 +8,7 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "dev:client": "cd client && npx vite",
-    "build": "cd client && npx vite build",
+    "build": "cd client && npm install && npm run build",
     "dev:all": "npm run dev & npm run dev:client",
     "restart": "pkill -f 'node server.js'; pkill -f 'vite'; sleep 1; node server.js & sleep 2 && cd client && npx vite --host"
   },
