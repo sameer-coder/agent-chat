@@ -144,9 +144,8 @@ export default function SettingsModal({ isOpen, onClose }) {
         }
 
         const freeIds = (Array.isArray(data.models) ? data.models : [])
-          .filter((m) => typeof m?.id === 'string' && (m.isFree || m.id.toLowerCase().endsWith(':free')))
-          .map((m) => m.id.trim())
-          .filter((id) => id.toLowerCase().endsWith(':free'));
+          .filter((m) => typeof m?.id === 'string' && m.isFree)
+          .map((m) => m.id.trim());
 
         const uniqueSorted = [...new Set(freeIds)].sort((a, b) => a.localeCompare(b));
         if (cancelled) return;
