@@ -258,7 +258,8 @@ export function orchestrationReducer(state, action) {
         progress: 0,
         startTime: Date.now(),
         endTime: null,
-        agentStatus: {},
+        // Show master agent as active immediately after task submission.
+        agentStatus: { master: 'Analyzing task...' },
         selectedAgent: null,
         activeEdges: [],
         tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0, callCount: 0 },

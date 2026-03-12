@@ -218,7 +218,7 @@ function TopologyDiagram({ agents, agentCount, agentStatus, selectedAgent, posit
 
   return (
     <div className="flex-1 relative overflow-hidden" ref={containerRef}>
-      {agentCount > 0 ? (
+      {agents.length > 0 ? (
         <>
           <svg className="absolute inset-0 w-full h-full">
             {edges.map(([a, b], i) => {
@@ -438,9 +438,10 @@ function ExpandedTopologyOverlay({ agents, agentCount, agentStatus, selectedAgen
 
 /* ── Main export ── */
 export default function AgentTopology() {
-  const { agentNames, agentCount, agentStatus, selectedAgent, streamingBuffers, agentResults, activeEdges, isProcessing } = useOrchestration();
+  const { agentNames, agentCount, agentStatus, selectedAgent, streamingBuffers, agentResults, activeEdges, isProcessing, currentTask } = useOrchestration();
   const dispatch = useOrchestrationDispatch();
   const [expanded, setExpanded] = useState(false);
+  const hasTask = Boolean(currentTask);
 
   // Task is fully complete when master is marked Completed and we're no longer processing
   const isTaskComplete = !isProcessing && !!(agentStatus.master?.includes?.('Completed') || agentStatus.master?.includes?.('Complete'));
@@ -448,13 +449,15 @@ export default function AgentTopology() {
   const positions = computePositions(agentCount);
   const edges = computeEdges(agentCount);
 
-  const agents = [
-    { id: 'master', name: 'Master Agent' },
-    ...Array.from({ length: agentCount }, (_, i) => ({
-      id: i,
-      name: agentNames[i] || `Agent ${i}`,
-    })),
-  ];
+  const agents = hasTask
+    ? [
+        { id: 'master', name: 'Master Agent' },
+        ...Array.from({ length: agentCount }, (_, i) => ({
+          id: i,
+          name: agentNames[i] || `Agent ${i}`,
+        })),
+      ]
+    : [];
 
   return (
     <>
@@ -471,7 +474,7 @@ export default function AgentTopology() {
             </button>
           </div>
           <span className="text-[11px] font-medium bg-gray-100 px-2 py-0.5 rounded-full text-gray-500">
-            {agentCount + 1} agents
+            {agents.length} agents
           </span>
         </div>
 
