@@ -56,6 +56,7 @@ export const initialState = {
   // Progress
   progress: 0,          // 0-100
   startTime: null,
+  endTime: null,        // set when task finishes (complete / stopped / error)
 
   // Active communication edges for topology lightning animation
   // Each entry: { from, to, id, timestamp }
@@ -256,6 +257,7 @@ export function orchestrationReducer(state, action) {
         subtasks: [],
         progress: 0,
         startTime: Date.now(),
+        endTime: null,
         agentStatus: {},
         selectedAgent: null,
         activeEdges: [],
@@ -370,6 +372,7 @@ export function orchestrationReducer(state, action) {
         ...state,
         isProcessing: false,
         progress: 100,
+        endTime: Date.now(),
         messages: [...state.messages, msg],
         subtasks,
         streamingBuffers: {},
@@ -392,6 +395,7 @@ export function orchestrationReducer(state, action) {
       return {
         ...state,
         isProcessing: false,
+        endTime: Date.now(),
         streamingBuffers: {},
         agentStatus: stoppedAgentStatus,
         messages: [...state.messages, msg],
@@ -409,6 +413,7 @@ export function orchestrationReducer(state, action) {
       return {
         ...state,
         isProcessing: false,
+        endTime: Date.now(),
         streamingBuffers: {},
         messages: [...state.messages, msg],
       };

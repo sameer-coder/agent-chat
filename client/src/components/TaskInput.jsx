@@ -1,10 +1,38 @@
 import { useState, useRef, useEffect } from 'react';
 import { useOrchestration } from '../context/OrchestrationContext.jsx';
 
+function formatElapsed(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
 export default function TaskInput({ onSubmit, onStop }) {
-  const { isProcessing, isConnected, apiConfigured } = useOrchestration();
+  const { isProcessing, isConnected, apiConfigured, startTime, endTime } = useOrchestration();
   const [value, setValue] = useState('');
+  const [elapsed, setElapsed] = useState(null);
   const textareaRef = useRef(null);
+
+  // Live ticking timer while processing
+  useEffect(() => {
+    if (isProcessing && startTime) {
+      setElapsed(Date.now() - startTime);
+      const id = setInterval(() => {
+        setElapsed(Date.now() - startTime);
+      }, 100);
+      return () => clearInterval(id);
+    }
+    // Task just finished — show final duration
+    if (!isProcessing && startTime && endTime) {
+      setElapsed(endTime - startTime);
+    }
+  }, [isProcessing, startTime, endTime]);
+
+  // Reset timer display when a new task starts
+  useEffect(() => {
+    if (!startTime) setElapsed(null);
+  }, [startTime]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -29,6 +57,8 @@ export default function TaskInput({ onSubmit, onStop }) {
     }
   };
 
+  const showTimer = elapsed !== null && startTime !== null;
+
   return (
     <div className="p-3 border-b border-gray-200 bg-white">
       <div className="flex items-end gap-2">
@@ -42,6 +72,22 @@ export default function TaskInput({ onSubmit, onStop }) {
           disabled={!apiConfigured}
           className="flex-1 resize-none border border-gray-200 rounded-lg px-3 py-2 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed max-h-32 overflow-y-auto"
         />
+
+        {showTimer && (
+          <div
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-mono font-semibold shrink-0 tabular-nums ${
+              isProcessing
+                ? 'bg-indigo-50 text-indigo-600 border border-indigo-200'
+                : 'bg-gray-100 text-gray-500 border border-gray-200'
+            }`}
+            title={isProcessing ? 'Elapsed time' : 'Total execution time'}
+          >
+            {isProcessing && (
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse shrink-0" />
+            )}
+            {formatElapsed(elapsed)}
+          </div>
+        )}
 
         {isProcessing ? (
           <button

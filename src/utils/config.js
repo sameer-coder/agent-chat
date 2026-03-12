@@ -73,13 +73,19 @@ function readConfigFile() {
   if (process.env.CONFIG_JSON) {
     try {
       let raw = process.env.CONFIG_JSON.trim();
-      // Railway's ENV editor sometimes wraps the value in outer quotes
-      if ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('"') && raw.endsWith('"'))) {
-        raw = raw.slice(1, -1);
-      }
-      // Railway's Raw Editor may show escaped quotes (\") — unescape them
-      if (raw.includes('\\"') && !raw.includes('{"')) {
-        raw = raw.replace(/\\"/g, '"');
+      // Base64-encoded JSON: no quoting or escaping issues at all (recommended for Railway)
+      // Detect base64 by checking it doesn't start with '{' or '[' and has only base64 chars
+      if (!/^[\[{]/.test(raw) && /^[A-Za-z0-9+/=\s]+$/.test(raw)) {
+        raw = Buffer.from(raw.replace(/\s/g, ''), 'base64').toString('utf-8');
+      } else {
+        // Railway's ENV editor sometimes wraps the value in outer quotes
+        if ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('"') && raw.endsWith('"'))) {
+          raw = raw.slice(1, -1);
+        }
+        // Railway's Raw Editor may show escaped quotes (\") — unescape them
+        if (raw.includes('\\"') && !raw.includes('{"')) {
+          raw = raw.replace(/\\"/g, '"');
+        }
       }
       parsed = JSON.parse(raw);
       console.log(`CONFIG_JSON parsed OK – activeProvider: ${parsed.activeProvider}, providers: ${(parsed.providers || []).length}`);
