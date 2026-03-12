@@ -137,7 +137,7 @@ export function resetClient() {
 /**
  * Direct fetch call using native https module to bypass SSL issues
  */
-async function directHttpsRequest(messages, isStream = false, maxTokens = 2000) {
+async function directHttpsRequest(messages, isStream = false, maxTokens = 2000, signal = null) {
   emitContextSnapshot(messages);
   const apiKey = getApiKey();
   const baseUrl = getBaseUrl();
@@ -184,7 +184,23 @@ async function directHttpsRequest(messages, isStream = false, maxTokens = 2000) 
     headers['X-Title'] = 'Multi-Agent Dashboard';
   }
   
+  if (signal?.aborted) {
+    const abortErr = new Error('Request aborted'); abortErr.name = 'AbortError';
+    return Promise.reject(abortErr);
+  }
+
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (fn) => { if (!settled) { settled = true; fn(); } };
+
+    const abortErr = new Error('Request aborted'); abortErr.name = 'AbortError';
+    let onAbort;
+    if (signal) {
+      onAbort = () => req.destroy();
+      signal.addEventListener('abort', onAbort);
+    }
+    const cleanup = () => { if (onAbort) signal.removeEventListener('abort', onAbort); };
+
     const options = {
       hostname,
       port,
@@ -197,7 +213,7 @@ async function directHttpsRequest(messages, isStream = false, maxTokens = 2000) 
     
     const req = transport.request(options, (res) => {
       if (isStream) {
-        resolve({ status: res.statusCode, body: res });
+        settle(() => { cleanup(); resolve({ status: res.statusCode, body: res }); });
         return;
       }
       
@@ -208,12 +224,12 @@ async function directHttpsRequest(messages, isStream = false, maxTokens = 2000) 
           try {
             const parsed = JSON.parse(data);
             emitTokenUsage(parsed.usage, parsed.model);
-            resolve(parsed.choices[0]?.message?.content || '');
+            settle(() => { cleanup(); resolve(parsed.choices[0]?.message?.content || ''); });
           } catch (e) {
-            reject(new Error(`Failed to parse response: ${data}`));
+            settle(() => { cleanup(); reject(new Error(`Failed to parse response: ${data}`)); });
           }
         } else {
-          reject(new Error(`API error: ${res.statusCode} - ${data}`));
+          settle(() => { cleanup(); reject(new Error(`API error: ${res.statusCode} - ${data}`)); });
         }
       });
     });
@@ -224,7 +240,7 @@ async function directHttpsRequest(messages, isStream = false, maxTokens = 2000) 
     });
     
     req.on('error', (e) => {
-      reject(e);
+      settle(() => { cleanup(); reject(signal?.aborted ? abortErr : e); });
     });
     
     req.write(postData);
@@ -235,7 +251,10 @@ async function directHttpsRequest(messages, isStream = false, maxTokens = 2000) 
 /**
  * Send a chat message and get a streaming response
  */
-export async function* chatStream(messages) {
+export async function* chatStream(messages, signal = null) {
+  if (signal?.aborted) {
+    const err = new Error('Request aborted'); err.name = 'AbortError'; throw err;
+  }
   emitContextSnapshot(messages);
   const apiKey = getApiKey();
   const baseUrl = getBaseUrl();
@@ -407,34 +426,51 @@ export async function* chatStream(messages) {
   });
 
   req.on('error', (e) => {
-    finish(e);
+    if (signal?.aborted) {
+      const abortErr = new Error('Request aborted'); abortErr.name = 'AbortError';
+      finish(abortErr);
+    } else {
+      finish(e);
+    }
   });
+
+  // Destroy the request immediately if the signal is aborted
+  let onAbort;
+  if (signal) {
+    onAbort = () => { req.destroy(); const abortErr = new Error('Request aborted'); abortErr.name = 'AbortError'; finish(abortErr); };
+    signal.addEventListener('abort', onAbort);
+  }
 
   req.write(postData);
   req.end();
 
-  // Yield chunks as they arrive
-  while (true) {
-    if (error) throw error;
-    if (queue.length > 0) {
-      yield queue.shift();
-      continue;
+  try {
+    // Yield chunks as they arrive
+    while (true) {
+      if (error) throw error;
+      if (queue.length > 0) {
+        yield queue.shift();
+        continue;
+      }
+      if (done) return;
+      // Wait for the next chunk or stream end
+      const value = await new Promise((resolve, reject) => {
+        waiting = { resolve, reject };
+      });
+      if (value === undefined) return; // stream ended
+      yield value;
     }
-    if (done) return;
-    // Wait for the next chunk or stream end
-    const value = await new Promise((resolve, reject) => {
-      waiting = { resolve, reject };
-    });
-    if (value === undefined) return; // stream ended
-    yield value;
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+    if (!req.destroyed) req.destroy();
   }
 }
 
 /**
  * Send a chat message and get a complete response
  */
-export async function chat(messages, maxTokens = 2000) {
-  return await directHttpsRequest(messages, false, maxTokens);
+export async function chat(messages, maxTokens = 2000, signal = null) {
+  return await directHttpsRequest(messages, false, maxTokens, signal);
 }
 
 /**

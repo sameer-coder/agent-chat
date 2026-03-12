@@ -203,6 +203,7 @@ export class SubAgent {
     this.maxRetries = 3;
     this.retryDelayMs = 1000;
     this.questionsAsked = 0;
+    this._stopSignal = null;
   }
 
   setDisplayName(displayName) { this.displayName = displayName; }
@@ -236,9 +237,10 @@ export class SubAgent {
     return results;
   }
 
-  async processSubtask(subtask, onChunk = null, onCommunication = null, isStopped = null) {
+  async processSubtask(subtask, onChunk = null, onCommunication = null, isStopped = null, signal = null) {
     this.currentTask = subtask;
     this.questionsAsked = 0;
+    this._stopSignal = signal;
 
     const selfLabel = this.displayName;
     const siblingLines = this.otherAgents.map(
@@ -361,11 +363,12 @@ export class SubAgent {
 
   async _getLLMResponse(onChunk = null, isStopped = null) {
     if (isStopped?.()) throw new TaskStoppedError();
+    const signal = this._stopSignal;
     setCallAgentLabel(this.agentId);
     if (onChunk) {
       try {
         const chunks = [];
-        for await (const chunk of chatStream(this.conversationHistory)) {
+        for await (const chunk of chatStream(this.conversationHistory, signal)) {
           if (isStopped?.()) throw new TaskStoppedError();
           chunks.push(chunk);
           onChunk(chunk);
@@ -374,14 +377,25 @@ export class SubAgent {
         console.log(`[${this.displayName}] chatStream produced 0 chunks, falling back to chat()`);
       } catch (streamErr) {
         if (streamErr.name === 'TaskStoppedError') throw streamErr;
+        if (streamErr.name === 'AbortError') throw new TaskStoppedError();
         console.log(`[${this.displayName}] chatStream error, falling back to chat(): ${streamErr.message}`);
       }
       if (isStopped?.()) throw new TaskStoppedError();
-      const result = await chat(this.conversationHistory);
-      if (result) onChunk(result);
-      return result || '';
+      try {
+        const result = await chat(this.conversationHistory, 2000, signal);
+        if (result) onChunk(result);
+        return result || '';
+      } catch (e) {
+        if (e.name === 'AbortError') throw new TaskStoppedError();
+        throw e;
+      }
     } else {
-      return await chat(this.conversationHistory);
+      try {
+        return await chat(this.conversationHistory, 2000, signal);
+      } catch (e) {
+        if (e.name === 'AbortError') throw new TaskStoppedError();
+        throw e;
+      }
     }
   }
 
@@ -393,10 +407,11 @@ export class SubAgent {
     });
     try {
       setCallAgentLabel(this.agentId);
-      const response = await chat(this.conversationHistory);
+      const response = await chat(this.conversationHistory, 2000, this._stopSignal);
       this.conversationHistory.push({ role: 'assistant', content: response });
       return response;
     } catch (error) {
+      if (error.name === 'AbortError') throw new TaskStoppedError();
       return `Error answering question: ${error.message}`;
     }
   }
@@ -409,10 +424,11 @@ export class SubAgent {
     });
     try {
       setCallAgentLabel(this.agentId);
-      const response = await chat(this.conversationHistory);
+      const response = await chat(this.conversationHistory, 2000, this._stopSignal);
       this.conversationHistory.push({ role: 'assistant', content: response });
       return response;
     } catch (error) {
+      if (error.name === 'AbortError') throw new TaskStoppedError();
       return `Error processing message: ${error.message}`;
     }
   }

@@ -127,6 +127,7 @@ export class MasterHandler {
     this.subTaskResults = {};
     this.executionLog = [];
     this.stopped = false;
+    this.abortController = null;
 
     getCommunicationBus().registerAgent('master-handler', this);
   }
@@ -134,11 +135,23 @@ export class MasterHandler {
   /** Signal that processing should stop at the next checkpoint. */
   stop() {
     this.stopped = true;
+    this.abortController?.abort();
   }
 
   /** Throws TaskStoppedError if stop() has been called. */
   checkStopped() {
     if (this.stopped) throw new TaskStoppedError();
+  }
+
+  /** Wrapper around chat() that passes the abort signal and converts AbortError → TaskStoppedError. */
+  async _chat(messages, maxTokens = 2000) {
+    this.checkStopped();
+    try {
+      return await chat(messages, maxTokens, this.abortController?.signal);
+    } catch (e) {
+      if (e.name === 'AbortError') throw new TaskStoppedError();
+      throw e;
+    }
   }
 
   /**
@@ -180,13 +193,14 @@ export class MasterHandler {
 
     try {
       setCallAgentLabel('master');
-      const response = await chat([
+      const response = await this._chat([
         ...this.conversationHistory,
         { role: 'user', content: answerPrompt }
       ]);
       this.log('question_answered', { from: fromAgentId, answerLength: response.length });
       return response;
     } catch (error) {
+      if (error.name === 'TaskStoppedError') throw error;
       this.log('question_answer_failed', { from: fromAgentId, error: error.message });
       return `I couldn't process your question due to an error: ${error.message}. Please proceed with your best judgment.`;
     }
@@ -212,6 +226,7 @@ export class MasterHandler {
   async processTask(task, onMessage = null) {
     this.executionLog = [];
     this.stopped = false;
+    this.abortController = new AbortController();
     this.log('task_started', { task });
 
     // Wire up token usage tracking — forward every API usage event to the UI
@@ -472,7 +487,7 @@ SUBTASK 5: [Fifth subtask - if needed]
 Only include as many SUBTASK lines as the AGENT_COUNT indicates.`;
 
     setCallAgentLabel('master');
-    const response = await chat([
+    const response = await this._chat([
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
       { role: 'user', content: analysisPrompt }
     ]);
@@ -552,7 +567,7 @@ Only include as many SUBTASK lines as the AGENT_COUNT indicates.`;
     const isStopped = () => this.stopped;
 
     const result = await withRetry(
-      () => this.subAgents[agentIndex].processSubtask(subtask, onChunk, onCommunication, isStopped),
+      () => this.subAgents[agentIndex].processSubtask(subtask, onChunk, onCommunication, isStopped, this.abortController?.signal),
       `subtask_${agentIndex}`,
       (retryInfo) => {
         this.log('retry', { ...retryInfo, agent: agentIndex });
@@ -612,7 +627,7 @@ ${roundsNote}
 IMPORTANT: Always refer to the agents by their names. The outputs above ARE the completed results. Synthesize these results into a coherent, complete final response for the user. Combine findings, address overlaps or conflicts, and present a unified solution.`;
 
     setCallAgentLabel('master');
-    const response = await chat([
+    const response = await this._chat([
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
       { role: 'user', content: synthesisPrompt }
     ]);
@@ -653,7 +668,7 @@ ${followUpLines}
 Only request follow-ups for genuinely important gaps. Minor stylistic issues do not warrant follow-ups.`;
 
     setCallAgentLabel('master');
-    const response = await chat([
+    const response = await this._chat([
       { role: 'system', content: MASTER_HANDLER_SYSTEM_PROMPT },
       { role: 'user', content: evaluationPrompt }
     ]);
@@ -743,7 +758,7 @@ Only request follow-ups for genuinely important gaps. Minor stylistic issues do 
     const isStopped = () => this.stopped;
 
     const result = await withRetry(
-      () => subAgent.processSubtask(followUpTask, onChunk, onCommunication, isStopped),
+      () => subAgent.processSubtask(followUpTask, onChunk, onCommunication, isStopped, this.abortController?.signal),
       `follow_up_${agentIndex}`,
       (retryInfo) => {
         this.log('retry', { ...retryInfo, agent: agentIndex });
