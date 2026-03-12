@@ -16,6 +16,26 @@ const PRESETS = [
 ];
 
 const SECTIONS = { api: 'api', prompt: 'prompt' };
+const MAX_RECENT_MODELS = 3;
+
+function isOpenRouterBaseUrl(value) {
+  if (!value) return false;
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname.includes('openrouter.ai');
+  } catch {
+    return value.toLowerCase().includes('openrouter.ai');
+  }
+}
+
+function pushRecentModelLocal(list, modelName) {
+  if (!modelName) return Array.isArray(list) ? list : [];
+  const next = Array.isArray(list) ? [...list] : [];
+  const idx = next.indexOf(modelName);
+  if (idx !== -1) next.splice(idx, 1);
+  next.unshift(modelName);
+  return next.slice(0, MAX_RECENT_MODELS);
+}
 
 export default function SettingsModal({ isOpen, onClose }) {
   const dispatch = useOrchestrationDispatch();
@@ -27,6 +47,13 @@ export default function SettingsModal({ isOpen, onClose }) {
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [presetValue, setPresetValue] = useState('');
+  const [recentModels, setRecentModels] = useState([]);
+  const [openRouterFreeModels, setOpenRouterFreeModels] = useState([]);
+  const [selectedFreeModel, setSelectedFreeModel] = useState('');
+  const [loadingFreeModels, setLoadingFreeModels] = useState(false);
+  const [freeModelsError, setFreeModelsError] = useState('');
+
+  const isOpenRouter = isOpenRouterBaseUrl(baseUrl);
 
   // Load saved config when opening
   useEffect(() => {
@@ -56,6 +83,9 @@ export default function SettingsModal({ isOpen, onClose }) {
           const keyData = await keyResp.json();
           setApiKey(keyData.apiKey || '');
           setModel(keyData.model || active?.model || 'gpt-4o-mini');
+          setRecentModels(Array.isArray(keyData.recentModels) ? keyData.recentModels : []);
+        } else {
+          setRecentModels([]);
         }
 
         // Sync preset
@@ -78,14 +108,77 @@ export default function SettingsModal({ isOpen, onClose }) {
         const data = await resp.json();
         setApiKey(data.apiKey || '');
         setModel(data.model || preset.model || '');
+        setRecentModels(Array.isArray(data.recentModels) ? data.recentModels : []);
       } else {
         setModel(preset.model || '');
         setApiKey('');
+        setRecentModels([]);
       }
     } catch {
       setModel(preset.model || '');
       setApiKey('');
+      setRecentModels([]);
     }
+  }, []);
+
+  // Load only free OpenRouter models when OpenRouter is selected.
+  useEffect(() => {
+    if (!isOpen || !isOpenRouter) {
+      setOpenRouterFreeModels([]);
+      setSelectedFreeModel('');
+      setLoadingFreeModels(false);
+      setFreeModelsError('');
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      setLoadingFreeModels(true);
+      setFreeModelsError('');
+      try {
+        const resp = await fetch('/api/openrouter/models');
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data?.error || 'Failed to load OpenRouter models');
+        }
+
+        const freeIds = (Array.isArray(data.models) ? data.models : [])
+          .filter((m) => typeof m?.id === 'string' && (m.isFree || m.id.toLowerCase().endsWith(':free')))
+          .map((m) => m.id.trim())
+          .filter((id) => id.toLowerCase().endsWith(':free'));
+
+        const uniqueSorted = [...new Set(freeIds)].sort((a, b) => a.localeCompare(b));
+        if (cancelled) return;
+        setOpenRouterFreeModels(uniqueSorted);
+      } catch (err) {
+        if (cancelled) return;
+        setOpenRouterFreeModels([]);
+        setFreeModelsError(err?.message || 'Failed to load OpenRouter free models');
+      } finally {
+        if (!cancelled) setLoadingFreeModels(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, isOpenRouter]);
+
+  // Keep free-model dropdown in sync with the model text input.
+  useEffect(() => {
+    if (!isOpenRouter || !model) {
+      setSelectedFreeModel('');
+      return;
+    }
+    setSelectedFreeModel(openRouterFreeModels.includes(model) ? model : '');
+  }, [isOpenRouter, model, openRouterFreeModels]);
+
+  const handleSelectFreeModel = useCallback((value) => {
+    setSelectedFreeModel(value);
+    if (!value) return;
+    setModel(value);
+    setRecentModels((prev) => pushRecentModelLocal(prev, value));
   }, []);
 
   const handleSave = async () => {
@@ -269,12 +362,53 @@ export default function SettingsModal({ isOpen, onClose }) {
                 <label className="block text-xs font-medium text-gray-700 mb-1">Model</label>
                 <input
                   type="text"
+                  list="recent-models-list"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
                   placeholder="gpt-4o-mini"
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
                 />
+                <datalist id="recent-models-list">
+                  {recentModels.map((m) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+                {recentModels.length > 0 && (
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    Recent: {recentModels.join(', ')}
+                  </p>
+                )}
               </div>
+
+              {/* OpenRouter free models */}
+              {isOpenRouter && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">OpenRouter Free Models</label>
+                  <select
+                    value={selectedFreeModel}
+                    onChange={(e) => handleSelectFreeModel(e.target.value)}
+                    disabled={loadingFreeModels || openRouterFreeModels.length === 0}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 disabled:bg-gray-50 disabled:text-gray-400"
+                  >
+                    <option value="">
+                      {loadingFreeModels
+                        ? 'Loading free models...'
+                        : openRouterFreeModels.length > 0
+                          ? 'Select a free OpenRouter model...'
+                          : 'No free models available'}
+                    </option>
+                    {openRouterFreeModels.map((modelId) => (
+                      <option key={modelId} value={modelId}>{modelId}</option>
+                    ))}
+                  </select>
+                  {freeModelsError && (
+                    <p className="mt-1 text-[11px] text-amber-600">{freeModelsError}</p>
+                  )}
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    Selecting a free model updates the model field using the exact OpenRouter id (for example, stepfun/step-3.5-flash:free).
+                  </p>
+                </div>
+              )}
             </>
           )}
 
