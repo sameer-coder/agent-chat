@@ -73,6 +73,9 @@ export const initialState = {
 
   // Context window snapshots (one per LLM call)
   contextSnapshots: [], // [{ callId, agentLabel, timestamp, model, sections, totalEstimatedTokens, actualPromptTokens? }]
+
+  // Per-agent self-critique confidence scores
+  agentConfidence: {}, // { [agentIndex]: { overall, revised } }
 };
 
 /**
@@ -189,6 +192,9 @@ export const ActionTypes = {
   // Context window inspector
   ADD_CONTEXT_SNAPSHOT: 'ADD_CONTEXT_SNAPSHOT',
   CORRELATE_SNAPSHOT_TOKENS: 'CORRELATE_SNAPSHOT_TOKENS',
+
+  // Self-critique confidence
+  SET_AGENT_CONFIDENCE: 'SET_AGENT_CONFIDENCE',
 };
 
 let messageIdCounter = 0;
@@ -264,6 +270,7 @@ export function orchestrationReducer(state, action) {
         activeEdges: [],
         tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0, callCount: 0 },
         contextSnapshots: [],
+        agentConfidence: {},
       };
 
     case ActionTypes.SET_AGENT_NAMES:
@@ -476,6 +483,15 @@ export function orchestrationReducer(state, action) {
       }
       return { ...state, contextSnapshots: snapshots };
     }
+
+    case ActionTypes.SET_AGENT_CONFIDENCE:
+      return {
+        ...state,
+        agentConfidence: {
+          ...state.agentConfidence,
+          [action.agentIndex]: { overall: action.overall, revised: action.revised },
+        },
+      };
 
     default:
       return state;

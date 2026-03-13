@@ -13,7 +13,7 @@ const FILTER_TABS = [
 
 const THINKING_TYPES = new Set(['status']);
 const MESSAGE_TYPES = new Set(['agent-communication', 'agent-question', 'agent-answer', 'follow-up', 'retry', 'warning']);
-const RESULT_TYPES = new Set(['agent-result', 'evaluation', 'complete']);
+const RESULT_TYPES = new Set(['agent-result', 'evaluation', 'complete', 'self-critique', 'self-critique-revised']);
 
 function filterMessages(messages, filter) {
   if (filter === 'all') return messages;
@@ -162,6 +162,10 @@ function FeedEntry({ msg, agentNames }) {
       return <QuestionEntry msg={msg} getName={getAgentName} getColor={getColor} />;
     case 'agent-answer':
       return <AnswerEntry msg={msg} getName={getAgentName} getColor={getColor} />;
+    case 'self-critique':
+      return <SelfCritiqueEntry msg={msg} getName={getAgentName} getColor={getColor} />;
+    case 'self-critique-revised':
+      return <SelfCritiqueRevisedEntry msg={msg} getName={getAgentName} getColor={getColor} />;
     case 'retry':
       return <RetryEntry msg={msg} getName={getAgentName} />;
     case 'warning':
@@ -210,17 +214,17 @@ function StatusEntry({ msg, getName, getColor }) {
 
   return (
     <div className="flex gap-2.5 py-2 border-b border-gray-100 animate-fade-slide-in">
-      <div className="text-[11px] text-gray-400 whitespace-nowrap pt-0.5 min-w-12">{msg.timeLabel}</div>
+      <div className="text-[11px] text-gray-500 whitespace-nowrap pt-0.5 min-w-12">{msg.timeLabel}</div>
       <div className="w-7 h-7 rounded-full flex items-center justify-center text-[13px] text-white shrink-0"
         style={{ background: color.dot }}>
         ⚡
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-[13px] font-semibold flex items-center gap-1">
+        <div className="text-[13px] font-semibold flex items-center gap-1.5">
           <span style={{ color: color.dot }}>{name}</span>
-          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 uppercase tracking-wider">thinking</span>
+          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 uppercase tracking-wider">thinking</span>
         </div>
-        <div className="text-[13px] text-gray-500 mt-0.5 italic">{msg.text}</div>
+        <div className="text-[13px] text-gray-600 mt-0.5 italic">{msg.text}</div>
       </div>
     </div>
   );
@@ -473,6 +477,159 @@ function ErrorEntry({ msg }) {
       <div className="flex-1 min-w-0">
         <div className="text-[13px] font-semibold text-red-600">Error</div>
         <div className="text-[13px] text-gray-700 mt-0.5">{msg.text}</div>
+      </div>
+    </div>
+  );
+}
+
+// ── Self-Critique Scorecard Components ─────────────────────────────────────
+
+function ScoreBar({ score }) {
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const t = setTimeout(() => setWidth(score * 10), 80);
+    return () => clearTimeout(t);
+  }, [score]);
+  const barColor = score >= 7 ? '#6ee7b7' : score >= 5 ? '#fcd34d' : '#fca5a5';
+  return (
+    <div className="score-bar-track flex-1">
+      <div
+        className="score-bar-fill"
+        style={{ width: `${width}%`, backgroundColor: barColor }}
+      />
+    </div>
+  );
+}
+
+function ScoreLabel({ score }) {
+  const color = score >= 7 ? '#059669' : score >= 5 ? '#d97706' : '#dc2626';
+  return (
+    <span className="text-[11px] font-semibold tabular-nums w-8 text-right" style={{ color }}>
+      {score}/10
+    </span>
+  );
+}
+
+function SelfCritiqueEntry({ msg, getName, getColor }) {
+  const { agentIndex, scores, overall, critique, willRevise, timeLabel } = msg;
+  const name = getName(agentIndex);
+  const color = getColor(agentIndex);
+  const overallColor = overall >= 7 ? '#059669' : overall >= 5 ? '#d97706' : '#dc2626';
+
+  return (
+    <div className="py-1.5 animate-fade-slide-in">
+      <div className={`rounded-lg border overflow-hidden ${willRevise ? 'bg-red-50/50 border-red-200' : 'bg-blue-50/30 border-blue-200/60'}`}>
+        {/* Header */}
+        <div className={`px-3 py-2 flex items-center justify-between border-b ${willRevise ? 'bg-red-50 border-red-200' : 'bg-blue-50/50 border-blue-200/60'}`}>
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color.dot }} />
+            <span className="text-[12px] font-semibold text-gray-800">{name}</span>
+            <span className="text-[10px] text-gray-500">· Self-Assessment</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {willRevise ? (
+              <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-600 border border-red-200">
+                ↻ Revising
+              </span>
+            ) : (
+              <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-emerald-50 text-emerald-600 border border-emerald-200">
+                ✓ Confident
+              </span>
+            )}
+            <span className="text-[10px] text-gray-500 tabular-nums">{timeLabel}</span>
+          </div>
+        </div>
+
+        {/* Score bars */}
+        <div className="px-3 pt-2.5 pb-1.5 space-y-2">
+          {[
+            { label: 'Accuracy', score: scores.accuracy },
+            { label: 'Completeness', score: scores.completeness },
+            { label: 'Relevance', score: scores.relevance },
+          ].map(({ label, score }) => (
+            <div key={label} className="flex items-center gap-2.5">
+              <span className="text-[11px] text-gray-600 w-24 shrink-0">{label}</span>
+              <ScoreBar score={score} />
+              <ScoreLabel score={score} />
+            </div>
+          ))}
+        </div>
+
+        {/* Footer: overall + critique */}
+        <div className={`px-3 pb-2.5 pt-2 flex items-start gap-3 border-t mt-1 ${willRevise ? 'border-red-100' : 'border-blue-100'}`}>
+          <div className="flex items-baseline gap-1 shrink-0">
+            <span className="text-[11px] text-gray-500">Overall</span>
+            <span className="text-[16px] font-bold" style={{ color: overallColor }}>{overall}</span>
+            <span className="text-[10px] text-gray-500">/10</span>
+          </div>
+          {critique && (
+            <div className="critique-quote text-[11px] text-gray-500 italic leading-relaxed">
+              "{critique}"
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SelfCritiqueRevisedEntry({ msg, getName, getColor }) {
+  const { agentIndex, scores, overall, originalScores, originalOverall } = msg;
+  const name = getName(agentIndex);
+  const color = getColor(agentIndex);
+  const delta = +(overall - originalOverall).toFixed(1);
+
+  return (
+    <div className="py-1.5 animate-fade-slide-in">
+      <div className="rounded-lg border border-emerald-200 overflow-hidden bg-emerald-50/40">
+        {/* Header */}
+        <div className="px-3 py-2 flex items-center justify-between bg-emerald-50 border-b border-emerald-200">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color.dot }} />
+            <span className="text-[12px] font-semibold text-gray-800">{name}</span>
+            <span className="text-[10px] text-gray-500">· Revised Assessment</span>
+          </div>
+          <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-700 border border-emerald-200">
+            +{delta} improvement
+          </span>
+        </div>
+
+        {/* Before / After comparison rows */}
+        <div className="px-3 py-2.5">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-[10px] text-gray-400 w-24 shrink-0" />
+            <span className="text-[10px] text-gray-500 font-medium uppercase tracking-wide w-8 text-center">Before</span>
+            <span className="text-[10px] text-gray-400 w-4 text-center">→</span>
+            <span className="text-[10px] text-gray-500 font-medium uppercase tracking-wide w-8 text-center">After</span>
+          </div>
+          {[
+            { label: 'Accuracy', before: originalScores.accuracy, after: scores.accuracy },
+            { label: 'Completeness', before: originalScores.completeness, after: scores.completeness },
+            { label: 'Relevance', before: originalScores.relevance, after: scores.relevance },
+          ].map(({ label, before, after }) => {
+            const improved = after > before;
+            return (
+              <div key={label} className="flex items-center gap-2 py-0.5">
+                <span className="text-[11px] text-gray-600 w-24 shrink-0">{label}</span>
+                <span className="text-[12px] font-bold tabular-nums text-gray-500 w-8 text-center">{before}</span>
+                <span className="text-[10px] text-gray-400 w-4 text-center">→</span>
+                <span className={`text-[12px] font-bold tabular-nums w-8 text-center ${improved ? 'text-emerald-600' : 'text-gray-500'}`}>{after}</span>
+                {improved && (
+                  <span className="text-[10px] text-emerald-500 font-medium">↑{after - before}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Overall comparison */}
+        <div className="px-3 pb-2.5 pt-1 flex items-center gap-2 border-t border-emerald-100">
+          <span className="text-[11px] text-gray-500">Overall</span>
+          <span className="text-[13px] font-bold text-gray-500 tabular-nums">{originalOverall}</span>
+          <span className="text-[11px] text-gray-400">→</span>
+          <span className="text-[15px] font-bold text-emerald-600 tabular-nums">{overall}</span>
+          <span className="text-[10px] text-emerald-600 font-medium ml-1">✓ Quality improved</span>
+        </div>
       </div>
     </div>
   );

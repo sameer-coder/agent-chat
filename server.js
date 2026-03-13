@@ -6,7 +6,7 @@ import { dirname, join } from 'path';
 import { existsSync } from 'fs';
 import { createMasterHandler } from './src/agents/index.js';
 import { exaSearch, isSearchConfigured } from './src/agents/searchService.js';
-import { getApiKey, setApiKey, hasApiKey, hasProviderAccess, isLocalProviderBaseUrl, getConfig, updateConfig, getProviderConfig, getProviderConfigRaw, saveProviderConfig, loadApiKeyForProvider, loadModelForProvider, loadRecentModelsForProvider, getSystemPrompt, setSystemPrompt, getSearchConfig, updateSearchConfig } from './src/utils/config.js';
+import { getApiKey, setApiKey, hasApiKey, hasProviderAccess, isLocalProviderBaseUrl, getConfig, updateConfig, getProviderConfig, getProviderConfigRaw, saveProviderConfig, loadApiKeyForProvider, loadModelForProvider, loadRecentModelsForProvider, getSystemPrompt, setSystemPrompt, getSelfCritiqueEnabled, setSelfCritiqueEnabled, getSearchConfig, updateSearchConfig } from './src/utils/config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -366,6 +366,18 @@ fastify.post('/api/system-prompt', async (request, reply) => {
   return { success: true };
 });
 
+// Get self-critique enabled flag
+fastify.get('/api/self-critique/config', async (request, reply) => {
+  return { enabled: getSelfCritiqueEnabled() };
+});
+
+// Save self-critique enabled flag
+fastify.post('/api/self-critique/config', async (request, reply) => {
+  const { enabled } = request.body;
+  setSelfCritiqueEnabled(enabled !== false);
+  return { success: true };
+});
+
 // Test search — run a quick query to verify the key works
 fastify.post('/api/search/test', async (request, reply) => {
   try {
@@ -440,7 +452,8 @@ async function handleTask(task, socket) {
   
   // Create a new Master Handler for this task, with optional custom system prompt
   const customSystemPrompt = getSystemPrompt();
-  const masterHandler = createMasterHandler(customSystemPrompt || undefined);
+  const selfCritiqueEnabled = getSelfCritiqueEnabled();
+  const masterHandler = createMasterHandler(customSystemPrompt || undefined, selfCritiqueEnabled);
   activeHandlers.set(socket, masterHandler);
   
   // Send task received confirmation

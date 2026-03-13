@@ -44,6 +44,7 @@ export default function SettingsModal({ isOpen, onClose }) {
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('gpt-4o-mini');
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [selfCritiqueEnabled, setSelfCritiqueEnabled] = useState(true);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [presetValue, setPresetValue] = useState('');
@@ -63,6 +64,7 @@ export default function SettingsModal({ isOpen, onClose }) {
         const [providerResp, promptResp] = await Promise.all([
           fetch('/api/provider-config'),
           fetch('/api/system-prompt'),
+          fetch('/api/self-critique/config').then(r => r.json()).then(d => setSelfCritiqueEnabled(d.enabled !== false)).catch(() => {}),
         ]);
 
         // Load system prompt
@@ -218,6 +220,13 @@ export default function SettingsModal({ isOpen, onClose }) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ systemPrompt }),
+        });
+
+        // Save self-critique setting
+        await fetch('/api/self-critique/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: selfCritiqueEnabled }),
         });
 
         onClose();
@@ -414,6 +423,31 @@ export default function SettingsModal({ isOpen, onClose }) {
           {/* ── System Prompt Section ── */}
           {activeSection === SECTIONS.prompt && (
             <>
+              {/* Self-Critique Toggle */}
+              <div className="flex items-start justify-between gap-4 py-3 border-b border-gray-100">
+                <div className="flex-1">
+                  <div className="text-xs font-medium text-gray-700">Agent Self-Critique</div>
+                  <p className="text-[11px] text-gray-500 mt-0.5 leading-relaxed">
+                    After each agent finishes, it scores its own response (Accuracy, Completeness, Relevance 1–10). If the overall score is below 6.5, the agent automatically rewrites and improves its output. Score cards are shown live in the conversation feed.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={selfCritiqueEnabled}
+                  onClick={() => setSelfCritiqueEnabled(v => !v)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 ${
+                    selfCritiqueEnabled ? 'bg-indigo-500' : 'bg-gray-200'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                      selfCritiqueEnabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">
                   Master Agent System Prompt

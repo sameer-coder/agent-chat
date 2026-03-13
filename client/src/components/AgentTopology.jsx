@@ -117,7 +117,7 @@ function computeEdges(agentCount) {
   return edges;
 }
 
-function AgentNode({ id, agent, position, isSelected, status, onClick, containerSize, isTaskComplete }) {
+function AgentNode({ id, agent, position, isSelected, status, onClick, containerSize, isTaskComplete, confidence }) {
   const isMaster = id === 'master';
   const color = isMaster ? MASTER_COLOR : getAgentColor(id);
   const iconKey = isMaster ? MASTER_ICON : getAgentIcon(id);
@@ -169,8 +169,20 @@ function AgentNode({ id, agent, position, isSelected, status, onClick, container
       </div>
 
       {/* Label */}
-      <div className="text-[11px] font-semibold whitespace-nowrap tracking-tight" style={{ color: color.text }}>
+      <div className="text-[11px] font-semibold whitespace-nowrap tracking-tight flex items-center gap-1" style={{ color: color.text }}>
         {agent.name}
+        {confidence && (
+          <span
+            className="text-[9px] font-bold px-1 py-0.5 rounded-full tabular-nums leading-none"
+            style={{
+              background: confidence.overall >= 7 ? '#dcfce7' : confidence.overall >= 5 ? '#fef9c3' : '#fee2e2',
+              color: confidence.overall >= 7 ? '#15803d' : confidence.overall >= 5 ? '#a16207' : '#dc2626',
+              border: `1px solid ${confidence.overall >= 7 ? '#86efac' : confidence.overall >= 5 ? '#fde047' : '#fca5a5'}`,
+            }}
+          >
+            {confidence.overall}
+          </span>
+        )}
       </div>
 
       {/* Status pill */}
@@ -191,7 +203,7 @@ function AgentNode({ id, agent, position, isSelected, status, onClick, container
 }
 
 /* ── Reusable topology diagram (used in normal + expanded views) ── */
-function TopologyDiagram({ agents, agentCount, agentStatus, selectedAgent, positions, edges, dispatch, activeEdges = [], isTaskComplete = false }) {
+function TopologyDiagram({ agents, agentCount, agentStatus, selectedAgent, positions, edges, dispatch, activeEdges = [], isTaskComplete = false, agentConfidence = {} }) {
   const containerRef = useRef(null);
   const [containerSize, setContainerSize] = useState({ width: 400, height: 400 });
 
@@ -257,6 +269,7 @@ function TopologyDiagram({ agents, agentCount, agentStatus, selectedAgent, posit
               status={agentStatus[agent.id === 'master' ? 'master' : agent.id]}
               containerSize={containerSize}
               isTaskComplete={isTaskComplete}
+              confidence={agent.id !== 'master' ? agentConfidence[agent.id] : null}
               onClick={() => dispatch({ type: ActionTypes.SELECT_AGENT, agent: agent.id })}
             />
           ))}
@@ -365,7 +378,7 @@ function CollapseIcon() {
 }
 
 /* ── Expanded overlay ── */
-function ExpandedTopologyOverlay({ agents, agentCount, agentStatus, selectedAgent, positions, edges, dispatch, streamingBuffers, agentResults, activeEdges, isTaskComplete = false, onClose }) {
+function ExpandedTopologyOverlay({ agents, agentCount, agentStatus, selectedAgent, positions, edges, dispatch, streamingBuffers, agentResults, activeEdges, isTaskComplete = false, agentConfidence = {}, onClose }) {
   // Close on Escape key
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Escape') onClose(); };
@@ -408,6 +421,7 @@ function ExpandedTopologyOverlay({ agents, agentCount, agentStatus, selectedAgen
               dispatch={dispatch}
               activeEdges={activeEdges}
               isTaskComplete={isTaskComplete}
+              agentConfidence={agentConfidence}
             />
           </div>
 
@@ -438,7 +452,7 @@ function ExpandedTopologyOverlay({ agents, agentCount, agentStatus, selectedAgen
 
 /* ── Main export ── */
 export default function AgentTopology() {
-  const { agentNames, agentCount, agentStatus, selectedAgent, streamingBuffers, agentResults, activeEdges, isProcessing, currentTask } = useOrchestration();
+  const { agentNames, agentCount, agentStatus, selectedAgent, streamingBuffers, agentResults, activeEdges, isProcessing, currentTask, agentConfidence } = useOrchestration();
   const dispatch = useOrchestrationDispatch();
   const [expanded, setExpanded] = useState(false);
   const hasTask = Boolean(currentTask);
@@ -488,6 +502,7 @@ export default function AgentTopology() {
           dispatch={dispatch}
           activeEdges={activeEdges}
           isTaskComplete={isTaskComplete}
+          agentConfidence={agentConfidence}
         />
       </div>
 
@@ -504,6 +519,7 @@ export default function AgentTopology() {
           agentResults={agentResults}
           activeEdges={activeEdges}
           isTaskComplete={isTaskComplete}
+          agentConfidence={agentConfidence}
           onClose={() => setExpanded(false)}
         />
       )}

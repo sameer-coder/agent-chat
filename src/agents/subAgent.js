@@ -433,6 +433,105 @@ export class SubAgent {
     }
   }
 
+  /**
+   * Rate this agent's own response on accuracy, completeness, and relevance (1–10 each).
+   * Returns { scores, overall, critique } or { skipped: true } on error / stop.
+   */
+  async _selfCritique(response, isStopped, signal) {
+    if (isStopped?.()) return { skipped: true };
+
+    const preview = response.length > 2500
+      ? response.substring(0, 2500) + '\n[...truncated...]'
+      : response;
+
+    const critiquePrompt = `You are reviewing your own previous response to an assigned task. Rate it honestly on three dimensions (1–10 each) and identify the single biggest weakness in one sentence.
+
+Your response to evaluate:
+--- RESPONSE ---
+${preview}
+--- END ---
+
+Respond ONLY with valid JSON in this exact format — no other text:
+{"accuracy":X,"completeness":X,"relevance":X,"critique":"One sentence describing the main weakness."}
+
+Scoring guide (1–10):
+- accuracy: Are the facts and details correct and reliable?
+- completeness: Does it cover all important aspects of the task?
+- relevance: Does it precisely address what was asked?`;
+
+    try {
+      const critiqueHistory = [
+        { role: 'system', content: 'You are a strict but fair self-evaluator. Output only valid JSON.' },
+        { role: 'user', content: critiquePrompt }
+      ];
+      setCallAgentLabel(this.agentId);
+      const raw = await chat(critiqueHistory, 120, signal);
+      if (isStopped?.()) return { skipped: true };
+
+      const jsonMatch = raw.match(/\{[\s\S]*?\}/);
+      if (!jsonMatch) return { skipped: true };
+
+      let parsed;
+      try { parsed = JSON.parse(jsonMatch[0]); } catch { return { skipped: true }; }
+
+      const clamp = (v) => Math.max(1, Math.min(10, Math.round(Number(v) || 7)));
+      const scores = {
+        accuracy: clamp(parsed.accuracy),
+        completeness: clamp(parsed.completeness),
+        relevance: clamp(parsed.relevance),
+      };
+      const overall = +((scores.accuracy + scores.completeness + scores.relevance) / 3).toFixed(1);
+      const critique = String(parsed.critique || '').substring(0, 200);
+
+      return { scores, overall, critique };
+    } catch (error) {
+      if (error.name === 'AbortError' || error.name === 'TaskStoppedError') throw error;
+      return { skipped: true };
+    }
+  }
+
+  /**
+   * Revise the previous response given a self-critique. Streams chunks via onChunk.
+   * Returns the revised response string.
+   */
+  async _reviseResponse(originalResponse, critique, onChunk, isStopped, signal) {
+    if (isStopped?.()) throw new TaskStoppedError();
+
+    const revisionHistory = [
+      ...this.conversationHistory,
+      {
+        role: 'user',
+        content: `Self-critique of your previous response: "${critique}"\n\nPlease revise and improve your response by addressing the identified weakness. Write the improved version directly — no commentary about the revision itself.`
+      }
+    ];
+
+    setCallAgentLabel(this.agentId);
+
+    if (onChunk) {
+      try {
+        const chunks = [];
+        for await (const chunk of chatStream(revisionHistory, signal)) {
+          if (isStopped?.()) throw new TaskStoppedError();
+          chunks.push(chunk);
+          onChunk(chunk);
+        }
+        if (chunks.length > 0) {
+          const revised = chunks.join('');
+          this.conversationHistory.push({ role: 'assistant', content: revised });
+          return revised;
+        }
+      } catch (streamErr) {
+        if (streamErr.name === 'TaskStoppedError' || streamErr.name === 'AbortError') throw streamErr;
+        // Fall through to non-streaming fallback
+      }
+    }
+
+    const result = await chat(revisionHistory, 2000, signal);
+    if (onChunk && result) onChunk(result);
+    this.conversationHistory.push({ role: 'assistant', content: result || '' });
+    return result || originalResponse;
+  }
+
   getHistory() { return [...this.conversationHistory]; }
 
   reset() {

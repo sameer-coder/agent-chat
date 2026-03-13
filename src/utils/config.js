@@ -478,6 +478,25 @@ export function setSystemPrompt(prompt) {
   writeConfigFile(data);
 }
 
+/**
+ * Get whether the Agent Self-Critique feature is enabled.
+ * Defaults to true so existing deployments keep the feature on.
+ */
+export function getSelfCritiqueEnabled() {
+  const data = readConfigFile();
+  return data.selfCritiqueEnabled !== false; // default true
+}
+
+/**
+ * Persist the Agent Self-Critique enabled flag.
+ * @param {boolean} enabled
+ */
+export function setSelfCritiqueEnabled(enabled) {
+  const data = readConfigFile();
+  data.selfCritiqueEnabled = Boolean(enabled);
+  writeConfigFile(data);
+}
+
 // ─── Search config helpers ───
 
 /**
@@ -520,6 +539,8 @@ export default {
   listProviders,
   getSystemPrompt,
   setSystemPrompt,
+  getSelfCritiqueEnabled,
+  setSelfCritiqueEnabled,
   getSearchConfig,
   updateSearchConfig
 };

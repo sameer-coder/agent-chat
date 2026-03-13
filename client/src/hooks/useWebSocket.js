@@ -304,6 +304,49 @@ function handleMessage(data, dispatch) {
       fireEdge(dispatch, topoKey(data.from), topoKey(data.to));
       break;
 
+    case 'self-critique':
+      dispatch({
+        type: ActionTypes.ADD_MESSAGE,
+        message: {
+          type: 'self-critique',
+          agentIndex: data.agentIndex,
+          agentName: data.agentName,
+          scores: data.scores,
+          overall: data.overall,
+          critique: data.critique,
+          willRevise: data.willRevise,
+        },
+      });
+      dispatch({
+        type: ActionTypes.SET_AGENT_CONFIDENCE,
+        agentIndex: data.agentIndex,
+        overall: data.overall,
+        revised: false,
+      });
+      break;
+
+    case 'self-critique-revised':
+      dispatch({
+        type: ActionTypes.ADD_MESSAGE,
+        message: {
+          type: 'self-critique-revised',
+          agentIndex: data.agentIndex,
+          agentName: data.agentName,
+          scores: data.scores,
+          overall: data.overall,
+          critique: data.critique,
+          originalScores: data.originalScores,
+          originalOverall: data.originalOverall,
+        },
+      });
+      dispatch({
+        type: ActionTypes.SET_AGENT_CONFIDENCE,
+        agentIndex: data.agentIndex,
+        overall: data.overall,
+        revised: true,
+      });
+      break;
+
     case 'retry':
       dispatch({
         type: ActionTypes.ADD_MESSAGE,

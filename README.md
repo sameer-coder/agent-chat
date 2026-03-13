@@ -22,6 +22,41 @@ A real-time multi-agent orchestration dashboard that breaks complex research tas
 - **Multi-Round Search** — Up to 3 search rounds per agent, with results injected back into the agent's conversation for incorporation.
 - **Configurable Search Provider** — Search API keys and endpoints are managed through the Settings UI.
 
+### Agent Self-Critique Scorecard
+After each agent finishes streaming its response, it performs a structured self-evaluation before the results are forwarded to the Master Handler. This is an optional feature toggled from **Settings → System Prompt**.
+
+**How it works:**
+1. The agent reviews its own output and scores it on three dimensions (1–10 each): **Accuracy**, **Completeness**, and **Relevance**.
+2. An **Overall score** (average of the three) is computed.
+3. If Overall ≥ 6.5 → the response is kept and a scorecard is posted to the conversation feed.
+4. If Overall < 6.5 → the agent automatically **rewrites and improves** its response, then self-scores again and posts a before/after comparison card.
+
+**How it looks in the demo:**
+
+```
+┌── 🎯 Alpha · Self-Assessment  ───────────── ✓ Confident ──┐
+│  Accuracy       ████████░░  8/10                        │
+│  Completeness   ██████░░░░  6/10                        │
+│  Relevance      █████████░  9/10                        │
+│  Overall  7.7/10  “Could include more specific examples.”  │
+└───────────────────────────────────────────────────┘
+```
+
+When the score falls below the threshold and a revision is made:
+
+```
+┌── ✨ Cipher · Revised Assessment ────── +2.3 improvement ─┐
+│  Accuracy       4  →  8  ↑4                           │
+│  Completeness   5  →  7  ↑2                           │
+│  Relevance      6  →  7  ↑1                           │
+│  Overall  5.0  →  7.3  ✓ Quality improved             │
+└───────────────────────────────────────────────────┘
+```
+
+**Topology nodes** display a small colored score badge (green ≥ 7, amber ≥ 5, red < 5) next to each agent's name for an instant at-a-glance quality indicator.
+
+**Toggle:** Settings → System Prompt tab → **Agent Self-Critique** switch. Defaults to enabled.
+
 ### Live Streaming Dashboard (React + Vite)
 - **Three-Panel Resizable Layout** — Agent Topology (left), Live Conversation (center), Progress & Details (right), with drag-to-resize dividers and per-panel maximize/restore buttons.
 - **Agent Topology Visualization** — Interactive node graph showing the Master Handler at the center connected to all active sub-agents, with:
@@ -221,6 +256,7 @@ npm start         # Serves the built frontend + API from port 3000
 | `/api/search/config` | GET/POST | Get or update search provider config |
 | `/api/search/test` | POST | Test search API connection |
 | `/api/search` | POST | Execute a web search |
+| `/api/self-critique/config` | GET/POST | Get or update Agent Self-Critique enabled flag |
 | `/ws` | WebSocket | Real-time bidirectional agent communication |
 
 ### WebSocket Events
@@ -239,6 +275,8 @@ npm start         # Serves the built frontend + API from port 3000
 | `web-search` / `web-search-done` | Server → Client | Search lifecycle events |
 | `evaluation` | Server → Client | Master Handler quality evaluation |
 | `follow-up-assignment` | Server → Client | Follow-up task assignments |
+| `self-critique` | Server → Client | Agent self-evaluation scorecard (scores + will-revise flag) |
+| `self-critique-revised` | Server → Client | Revised scorecard after automatic rewrite (before/after comparison) |
 | `token-usage` | Server → Client | Token consumption updates |
 | `complete` | Server → Client | Final synthesized result |
 | `error` | Server → Client | Error notification |

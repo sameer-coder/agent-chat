@@ -109,12 +109,13 @@ export class MasterHandler {
    *   model sees the user's instructions first while retaining all orchestration
    *   capabilities.
    */
-  constructor(customSystemPrompt) {
+  constructor(customSystemPrompt, selfCritiqueEnabled = true) {
     this.name = 'Master Handler';
     this.agentId = 'master-handler';
     this.agentNames = {};
     this.subAgents = [];
     this.agentCount = 0;
+    this.selfCritiqueEnabled = selfCritiqueEnabled;
 
     const effectiveSystemPrompt = customSystemPrompt
       ? `${customSystemPrompt.trim()}\n\n---\n\n${MASTER_HANDLER_SYSTEM_PROMPT}`
@@ -587,11 +588,81 @@ Only include as many SUBTASK lines as the AGENT_COUNT indicates.`;
     console.log(result.result?.substring(0, 300) + (result.result?.length > 300 ? '...' : ''));
     console.log(`===== END AGENT ${agentIndex} RESULT =====\n`);
 
+    // ── Self-Critique Phase ────────────────────────────────────────────────────
+    let finalResult = result.result;
+    const REVISION_THRESHOLD = 6.5;
+
+    if (!this.selfCritiqueEnabled) {
+      if (onMessage) {
+        onMessage({ type: 'task-complete', agent: agentIndex, agentIndex, message: 'Subtask completed' });
+      }
+      return finalResult;
+    }
+
+    this.checkStopped();
+    if (onMessage) {
+      onMessage({ type: 'status', agent: agentIndex, agentIndex, message: 'Evaluating response quality...' });
+    }
+
+    const critiqueResult = await this.subAgents[agentIndex]._selfCritique(
+      result.result, isStopped, this.abortController?.signal
+    );
+
+    if (!critiqueResult.skipped) {
+      const { scores, overall, critique } = critiqueResult;
+      const willRevise = overall < REVISION_THRESHOLD;
+
+      if (onMessage) {
+        onMessage({
+          type: 'self-critique',
+          agentIndex,
+          agentName: this.agentNames[agentIndex],
+          scores, overall, critique, willRevise,
+        });
+      }
+
+      if (willRevise) {
+        this.checkStopped();
+        if (onMessage) {
+          onMessage({ type: 'status', agent: agentIndex, agentIndex, message: 'Revising response based on self-critique...' });
+        }
+
+        const revisedResult = await this.subAgents[agentIndex]._reviseResponse(
+          result.result, critique, onChunk, isStopped, this.abortController?.signal
+        );
+
+        this.checkStopped();
+        if (onMessage) {
+          onMessage({ type: 'stream-end', agent: agentIndex, agentIndex });
+        }
+
+        const revisedCritique = await this.subAgents[agentIndex]._selfCritique(
+          revisedResult, isStopped, this.abortController?.signal
+        );
+
+        if (!revisedCritique.skipped && onMessage) {
+          onMessage({
+            type: 'self-critique-revised',
+            agentIndex,
+            agentName: this.agentNames[agentIndex],
+            scores: revisedCritique.scores,
+            overall: revisedCritique.overall,
+            critique: revisedCritique.critique,
+            originalScores: scores,
+            originalOverall: overall,
+          });
+        }
+
+        finalResult = revisedResult;
+      }
+    }
+    // ── End Self-Critique Phase ────────────────────────────────────────────────
+
     if (onMessage) {
       onMessage({ type: 'task-complete', agent: agentIndex, agentIndex, message: 'Subtask completed' });
     }
 
-    return result.result;
+    return finalResult;
   }
 
   async synthesizeResults(originalTask, allResults) {
@@ -804,8 +875,8 @@ Only request follow-ups for genuinely important gaps. Minor stylistic issues do 
   }
 }
 
-export function createMasterHandler(customSystemPrompt) {
-  return new MasterHandler(customSystemPrompt);
+export function createMasterHandler(customSystemPrompt, selfCritiqueEnabled = true) {
+  return new MasterHandler(customSystemPrompt, selfCritiqueEnabled);
 }
 
 export default {
